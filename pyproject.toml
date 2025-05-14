@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubernetes-readonly-mcp"
+version = "0.1.1"
+description = "A read-only Kubernetes MCP server for safely interacting with Kubernetes clusters"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Vijay Kodam", email = "16428721+vijaykodam@users.noreply.github.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "kubernetes>=28.1.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/vijaykodam/kubernetes-readonly-mcp"
+"Bug Tracker" = "https://github.com/vijaykodam/kubernetes-readonly-mcp/issues"
+"Documentation" = "https://github.com/vijaykodam/kubernetes-readonly-mcp#readme"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kubernetes_readonly_mcp*"]
+
+[project.scripts]
+kubernetes-readonly-mcp = "kubernetes_readonly_mcp.server:main"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest]
+testpaths = ["tests"]
