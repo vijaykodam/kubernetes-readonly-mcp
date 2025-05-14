@@ -17,7 +17,6 @@ def mock_k8s_client():
 def test_kubernetes_manager_initialization(mock_k8s_client):
     """Test that the KubernetesManager initializes correctly."""
     manager = KubernetesManager()
-    
     # Verify that the config was loaded
     mock_k8s_client.CoreV1Api.assert_called_once()
     mock_k8s_client.AppsV1Api.assert_called_once()
