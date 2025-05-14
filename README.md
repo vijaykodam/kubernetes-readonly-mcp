@@ -8,7 +8,7 @@ Built with FastMCP 2.0 and the official Kubernetes Python client library.
 
 ## Blog Post and Demo Video
 
-Read more about running Kubernetes read only MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
+Read more about running the MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
 
 ## Features
 
@@ -22,15 +22,15 @@ This MCP server provides the following read-only tools:
 - `get_pod_logs`: Get logs from a specific pod
 - `get_logs`: Get logs from pods, deployments, jobs, or resources matching a label selector
 
-### Prerequisites
+## Prerequisites
 
-Kubernetes cluster creation and configuring your kubectl must be done before starting the installation. Default K8s context will be used.
-For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine.
-Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
+- Kubernetes cluster creation and configuring your kubectl must be done before starting the installation. Default K8s context will be used.
+- For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine.
+- Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
 
 ## Installation
 
-### Adding to your MCP configuration
+### MCP configuration
 
 Add this to your MCP Server configuration file:
 
@@ -66,14 +66,6 @@ You can use Amazon Q CLI, Claude Desktop, VSCode + Cline, or any other MCP-compa
 2. "Are there any failing pods? Debug why they are failing"
 3. "Show me the logs from the nginx deployment"
 4. "List all services in the default namespace"
-
-## Development
-
-To set up the development environment:
-
-```bash
-pip install -e ".[dev]"
-```
 
 ## License
 
