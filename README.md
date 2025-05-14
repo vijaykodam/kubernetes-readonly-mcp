@@ -1,10 +1,14 @@
-# Kubernetes Read-Only MCP Server
+# Kubernetes Read Only MCP Server
 
 A Model Context Protocol (MCP) server for safely interacting with Kubernetes clusters using read-only operations.
 
 This MCP server was created to provide a secure way to interact with Kubernetes clusters without allowing any create, update, or delete operations. It only exposes read-only APIs to ensure your clusters remain safe while still enabling AI assistants to help you monitor and troubleshoot your Kubernetes resources.
 
 Built with FastMCP 2.0 and the official Kubernetes Python client library.
+
+## Blog Post and Demo Video
+
+Read more about running Kubernetes read only MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
 
 ## Features
 
@@ -18,44 +22,37 @@ This MCP server provides the following read-only tools:
 - `get_pod_logs`: Get logs from a specific pod
 - `get_logs`: Get logs from pods, deployments, jobs, or resources matching a label selector
 
+### Prerequisites
+
+Kubernetes cluster creation and configuring your kubectl must be done before starting the installation. Default K8s context will be used.
+For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine.
+Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
+
 ## Installation
-
-### From PyPI
-
-```bash
-pip install kubernetes-readonly-mcp
-```
-
-### From Source
-
-```bash
-git clone https://github.com/vijaykodam/kubernetes-readonly-mcp.git
-cd kubernetes-readonly-mcp
-pip install -e .
-```
-
-## Usage
-
-### Running as a standalone MCP server
-
-```bash
-kubernetes-readonly-mcp
-```
 
 ### Adding to your MCP configuration
 
-Add this to your `mcp.json`:
+Add this to your MCP Server configuration file:
 
 ```json
 {
   "mcpServers": {
     "kubernetes-readonly-mcp": {
         "command": "uvx",
-        "args": ["-y", "kubernetes-readonly-mcp@latest"]
+        "args": ["kubernetes-readonly-mcp@latest"]
     }
   }
 }
 ```
+
+Every MCP Hosts/Clients manages their MCP Server configuration differently.
+If you are using it for the first time then most probably mcp configuration file might not be present. 
+You might have to create it and paste the above JSON text into it.
+
+Here is related documentation for Claude Desktop and Amazon Q CLI:
+
+1. Claude Desktop: https://modelcontextprotocol.io/quickstart/user
+2. Amazon Q CLI: https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp-configuration.html
 
 ### Verify Installation
 
@@ -84,4 +81,4 @@ Apache License 2.0
 
 ## Disclaimer
 
-This is an experimental project. Use it at your own risk. This is not production-ready.
+This is an experimental project and not production-ready. Use it at your own discretion.
