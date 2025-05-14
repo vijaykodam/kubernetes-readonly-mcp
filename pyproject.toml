@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kubernetes-readonly-mcp"
-version = "0.1.2"
+version = "0.1.3"
 description = "A read-only Kubernetes MCP server for safely interacting with Kubernetes clusters"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -17,8 +17,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Libraries",
@@ -54,7 +52,7 @@ kubernetes-readonly-mcp = "kubernetes_readonly_mcp.server:main"
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310", "py311"]
+target-version = ["py310", "py311"]
 
 [tool.isort]
 profile = "black"
