@@ -24,13 +24,19 @@ This MCP server provides the following read-only tools:
 
 ## Prerequisites
 
-- Kubernetes cluster creation and configuring your kubectl must be done before starting the installation. Default K8s context will be used.
-- For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine.
-- Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
+- Python 3.10 or higher needed.
+- uv is installed. If not, install it using `pip install uv`
+- Kubernetes cluster up and running.
+- Kubeconfig configured with default context.
+- For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine. Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
 
 ## Installation
 
 ### MCP configuration
+
+Every MCP Hosts/Clients manages their MCP Server configuration differently.
+If you are using it for the first time then mcp configuration file might not be present. 
+You might have to create it and paste the below JSON text into it. Note that there may be other MCP servers present so update JSON accordingly.
 
 Add this to your MCP Server configuration file:
 
@@ -45,11 +51,7 @@ Add this to your MCP Server configuration file:
 }
 ```
 
-Every MCP Hosts/Clients manages their MCP Server configuration differently.
-If you are using it for the first time then most probably mcp configuration file might not be present. 
-You might have to create it and paste the above JSON text into it.
-
-Here is related documentation for Claude Desktop and Amazon Q CLI:
+Here is the related documentation for Claude Desktop and Amazon Q CLI:
 
 1. Claude Desktop: https://modelcontextprotocol.io/quickstart/user
 2. Amazon Q CLI: https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp-configuration.html
@@ -58,7 +60,7 @@ Here is related documentation for Claude Desktop and Amazon Q CLI:
 
 Verify that your MCP Host/Client is restarted and the kubernetes-readonly-mcp MCP server is visible in the list.
 
-You can use Amazon Q CLI, Claude Desktop, VSCode + Cline, or any other MCP-compatible client.
+You can use Amazon Q CLI, Claude Desktop, VSCode + Cline, or any other MCP client.
 
 ## Example Prompts
 
