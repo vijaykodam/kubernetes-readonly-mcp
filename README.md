@@ -6,9 +6,9 @@ This MCP server was created to provide a secure way to interact with Kubernetes 
 
 Built with FastMCP 2.0 and the official Kubernetes Python client library.
 
-## Blog Post and Demo Video
+## Blog post and Demo
 
-Read more about running the MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
+Watch the demo running the MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
 
 ## Features
 
