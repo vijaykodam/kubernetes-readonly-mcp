@@ -527,6 +527,100 @@ def get_logs(resource_type: str, namespace: Optional[str] = None, name: Optional
         print(f"Error in get_logs: {e}")
         return json.dumps({"error": f"Error retrieving logs: {str(e)}"})
 
+@mcp.tool(description="List all nodes in the cluster")
+def list_nodes(resource: Any = None):
+    """
+    Lists all nodes in the Kubernetes cluster, providing detailed information for each.
+
+    This function connects to the Kubernetes API to retrieve a list of all nodes
+    and extracts various details about each node. The information includes:
+    - Node name
+    - Current status (e.g., Ready, NotReady)
+    - Assigned roles (e.g., master, worker)
+    - IP addresses (internal, external)
+    - Resource capacity (CPU, memory, pods)
+    - Allocatable resources
+    - Node information (Kubelet version, OS image, container runtime)
+    - Creation timestamp
+    - Labels
+    - Taints
+
+    Args:
+        resource (Any, optional): The KubernetesManager resource instance.
+                                  If not provided, it will be initialized automatically.
+                                  This argument is typically injected by the MCP framework.
+
+    Returns:
+        str: A JSON string representing a list of nodes and their comprehensive details.
+             Returns a JSON string with an "error" key if an exception occurs.
+    """
+    try:
+        # Get the resource from the k8s_manager if not provided
+        if resource is None:
+            resource = k8s_manager()
+
+        # Check if resource is a string and initialize KubernetesManager if needed
+        if isinstance(resource, str):
+            print(f"Resource is a string: {resource}, initializing KubernetesManager")
+            resource = KubernetesManager()
+        elif not hasattr(resource, 'get_core_api'):
+            print(f"Resource is not a KubernetesManager instance: {type(resource)}, initializing KubernetesManager")
+            resource = KubernetesManager()
+
+        print("Listing all nodes in the cluster")
+        ret = resource.get_core_api().list_node(watch=False)
+
+        nodes = []
+        for item in ret.items:
+            # Extract node status
+            status = None
+            for condition in item.status.conditions:
+                if condition.type == "Ready":
+                    status = "Ready" if condition.status == "True" else "NotReady"
+                    break
+
+            # Extract node roles
+            roles = [role for role in item.metadata.labels if "node-role.kubernetes.io" in role]
+            if not roles:
+                roles = ["<none>"] # Handle nodes with no specific role label
+
+            # Extract IP addresses
+            addresses = {address.type: address.address for address in item.status.addresses}
+
+            nodes.append({
+                "name": item.metadata.name,
+                "status": status,
+                "roles": roles,
+                "addresses": addresses,
+                "capacity": {
+                    "cpu": item.status.capacity.get("cpu"),
+                    "memory": item.status.capacity.get("memory"),
+                    "pods": item.status.capacity.get("pods")
+                },
+                "allocatable": {
+                    "cpu": item.status.allocatable.get("cpu"),
+                    "memory": item.status.allocatable.get("memory"),
+                    "pods": item.status.allocatable.get("pods")
+                },
+                "node_info": {
+                    "kubelet_version": item.status.node_info.kubelet_version,
+                    "os_image": item.status.node_info.os_image,
+                    "container_runtime_version": item.status.node_info.container_runtime_version
+                },
+                "creation_timestamp": item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else None,
+                "labels": item.metadata.labels,
+                "taints": [{
+                    "key": taint.key,
+                    "value": taint.value,
+                    "effect": taint.effect
+                } for taint in item.spec.taints] if item.spec.taints else []
+            })
+
+        return json.dumps(nodes, indent=2)
+    except Exception as e:
+        print(f"Error in list_nodes: {e}")
+        return json.dumps({"error": str(e)})
+
 def main():
     """Entry point for the MCP server when run as a script."""
     mcp.run()  # Default: uses STDIO transport
