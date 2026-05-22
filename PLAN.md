@@ -178,15 +178,15 @@ against installed kubernetes 36.0.0 (Resource has group_version/kind/namespaced/
 has to_dict). Verification output (real): pytest 9 passed; flake8 exit 0; black --check 3 files unchanged
 (benign py312-vs-py313 AST-check warning); isort clean; import ok. Registered-tool check: all 11 tools
 (8 curated + 3 generic) report readOnly=True, destructive=False.
-Commit:
+Commit: 3a61ffe
 
-## Phase 5 — README rewrite
+## Phase 5 — README rewrite  [STATUS: done]
 
-- [ ] Intro: FastMCP 3.x + latest kubernetes client. Features: add the 3 generic tools; state
+- [x] Intro: FastMCP 3.x + latest kubernetes client. Features: add the 3 generic tools; state
       Secret values are never exposed.
-- [ ] Prerequisites: Python 3.10+.
-- [ ] Remove the "Amazon Q CLI Setup" section and the Amazon Q example in "General MCP Host Config".
-- [ ] Host sections, in order, each with copy-paste config (`command: "uvx"`, `args: ["kubernetes-readonly-mcp@latest"]`):
+- [x] Prerequisites: Python 3.10+.
+- [x] Remove the "Amazon Q CLI Setup" section and the Amazon Q example in "General MCP Host Config".
+- [x] Host sections, in order, each with copy-paste config (`command: "uvx"`, `args: ["kubernetes-readonly-mcp@latest"]`):
       1. **Claude Code** — `claude mcp add kubernetes-readonly-mcp -- uvx kubernetes-readonly-mcp@latest`
          (stdio default; `--` separates the command). Also show project `.mcp.json`.
       2. **Codex CLI** — `~/.codex/config.toml`:
@@ -201,16 +201,34 @@ Commit:
       5. **Claude Desktop** — `claude_desktop_config.json` (macOS
          `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows
          `%APPDATA%\Claude\claude_desktop_config.json`); standard `mcpServers` JSON; restart app.
-- [ ] Fix the misleading verification tip: `uvx kubernetes-readonly-mcp@latest` starts the STDIO
+- [x] Fix the misleading verification tip: `uvx kubernetes-readonly-mcp@latest` starts the STDIO
       server (it does NOT accept a tool name like `list_namespaces` as a CLI arg).
-- [ ] Update "Example Host Documentation" links (drop Amazon Q). Add an example prompt exercising
+- [x] Update "Example Host Documentation" links (drop Amazon Q). Add an example prompt exercising
       the generic tool, e.g. "List all ingresses across every namespace".
 
 Verification:
 - Each JSON snippet parses (e.g. pipe through `python -m json.tool`); TOML is well-formed.
 - No remaining "Amazon Q" references except the one-line "Kiro replaces Amazon Q" note.
 
-Done / notes:  Commit:
+Done / notes: README fully rewritten. Intro now cites FastMCP 3.x + official kubernetes client and
+states Secret values are never exposed (metadata + type only). Features split into "Curated tools"
+(the 8) and "Generic tools" (list_resource, get_resource, list_api_resources) with a Secret-safety
+callout. Prereqs state Python 3.10+. "Amazon Q CLI Setup" section deleted and the Amazon Q example in
+General MCP Host Config removed. Added five host sections in order — Claude Code (`claude mcp add ...`
++ project `.mcp.json`), Codex CLI (`~/.codex/config.toml` `[mcp_servers.*]`), Kiro CLI
+(`~/.kiro/settings/mcp.json`, `"disabled": false`, + amazonq->kiro migration note), Antigravity
+(`~/.gemini/antigravity/mcp_config.json` + Windows path + in-app open path), Claude Desktop (macOS +
+Windows paths, restart). Replaced the bad `uvx ... list_namespaces` tip with an accurate "Verifying
+the setup" section explaining the STDIO server waits for an MCP host and takes no tool-name CLI arg.
+Example Host Documentation links updated (Amazon Q dropped; Claude Code/Codex/Kiro/Antigravity/Claude
+Desktop added); added generic-tool example prompt ("List all ingresses across every namespace").
+Decisions (flagged): (1) the blog/demo line previously said "running the MCP server using Amazon Q
+CLI" — reworded to "Watch the demo and read the write-up at <url>" to honor the no-stray-Amazon-Q
+rule while keeping the link. (2) Two Amazon Q mentions remain, both in the Kiro section and both
+explicitly required by this phase's task list (successor framing + the `~/.aws/amazonq/mcp.json`
+migration pointer). Verification output (real): 4/4 JSON blocks parse OK; the 1 TOML block parses OK
+via the 3.12 venv and resolves to command="uvx", args=["kubernetes-readonly-mcp@latest"]; grep shows
+no stray "Amazon Q" beyond the two Kiro notes and no `FastMCP 2` / bad-CLI-example leftovers. Commit:
 
 ## Phase 6 — Final verification & release prep
 
