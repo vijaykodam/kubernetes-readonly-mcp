@@ -298,7 +298,7 @@ JSON-in-text-content is therefore the same observable behavior as the reference.
 **accept as-is**; corrected the overstated "emits structured content + schemas" wording in this
 Decisions section and in `CLAUDE.md`. (An EKS-style richer envelope — `{kind,count,items}` + Pydantic
 models + `CallToolResult`/`isError` — would be a separate, out-of-scope future phase.)
-Commit:
+Commit: a5210c9
 
 ---
 
