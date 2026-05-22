@@ -1,7 +1,9 @@
 # PLAN: Modernize Kubernetes Read-Only MCP Server
 
-Authoritative, self-contained execution plan. A fresh session should read `CLAUDE.md` then this
-file, and resume at the first phase whose checkboxes are unticked.
+Authoritative, self-contained execution plan. This committed file is the source of truth for the
+work. `CLAUDE.md` is a local convenience file that is **gitignored (not committed)**, so do not rely
+on it being present in a fresh clone — read it first if it exists locally, then this file. Resume at
+the first phase whose checkboxes are unticked.
 
 Repo: `/Users/vg/experiments/k8s-mcp-server/kubernetes-readonly-mcp` · Work branch: `modernize-mcp-server`
 
@@ -105,30 +107,47 @@ Done / notes: System Python is 3.9, so verified in a `uv`-provisioned 3.12 venv 
 `uv pip install -e ".[dev]"` succeeded; resolved fastmcp 3.3.1, kubernetes 36.0.0, mcp 1.27.1 (transitive).
 `__version__` prints `0.2.0`. Confirmed the Phase 2 note: `from mcp.server.fastmcp import FastMCP` and
 `import kubernetes_readonly_mcp.server` both still import OK (repo runnable until Phase 3). Only
-`pyproject.toml`, `__init__.py`, `.github/workflows/test.yml` changed. Commit:
+`pyproject.toml`, `__init__.py`, `.github/workflows/test.yml` changed. Commit: ada4392
 
-## Phase 3 — Core rewrite: framework, init, annotations, structured output (existing 8 tools)
+## Phase 3 — Core rewrite: framework, init, annotations, structured output (existing 8 tools)  [STATUS: done]
 
-- [ ] Switch import to `from fastmcp import FastMCP` and `from mcp.types import ToolAnnotations`.
-- [ ] Remove the Q-CLI workaround entirely: delete the `resource: Any = None` params, the
+- [x] Switch import to `from fastmcp import FastMCP` and `from mcp.types import ToolAnnotations`.
+- [x] Remove the Q-CLI workaround entirely: delete the `resource: Any = None` params, the
       `@mcp.resource('resource://k8s')` function, and all `isinstance(resource, str)` / `hasattr` checks.
-- [ ] Add lazy singleton: `_manager = None`; `_get_manager()` creates `KubernetesManager()` once.
-- [ ] `KubernetesManager`: add `dynamic.DynamicClient(client.ApiClient())` as `self.dynamic_api`
+- [x] Add lazy singleton: `_manager = None`; `_get_manager()` creates `KubernetesManager()` once.
+- [x] `KubernetesManager`: add `dynamic.DynamicClient(client.ApiClient())` as `self.dynamic_api`
       with a `get_dynamic_api()` accessor (alongside Core/Apps/Batch/Networking).
-- [ ] Add `_sanitize(obj_dict, kind)`: drop `metadata.managedFields`; if `kind == "Secret"`,
+- [x] Add `_sanitize(obj_dict, kind)`: drop `metadata.managedFields`; if `kind == "Secret"`,
       remove `data` and `stringData` (keep `metadata` + `type`).
-- [ ] Convert all 8 tools: call `_get_manager()`, return native `list[dict]` / `dict` (errors as
+- [x] Convert all 8 tools: call `_get_manager()`, return native `list[dict]` / `dict` (errors as
       `{"error": ...}`), and annotate each with
       `ToolAnnotations(title=<readable>, readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)`.
-- [ ] Keep `main()` -> `mcp.run()` (STDIO).
-- [ ] Update `tests/test_server.py`: assert the dynamic client is created in init; drop any
+- [x] Keep `main()` -> `mcp.run()` (STDIO).
+- [x] Update `tests/test_server.py`: assert the dynamic client is created in init; drop any
       `resource=` usage; adjust to structured (object) returns.
 
 Verification:
 - `pytest -q` passes; `flake8 src tests`, `black --check src tests`, `isort --check-only --profile black src tests` clean.
 - `python -c "from kubernetes_readonly_mcp.server import mcp; print('ok')"` imports without error.
 
-Done / notes:  Commit:
+Done / notes: server.py fully rewritten on standalone FastMCP 3.x. `_ro(title)` helper builds the
+shared read-only `ToolAnnotations`; all 8 tools annotated and returning native objects (errors as
+`{"error": ...}`). Lazy `_get_manager()` singleton + `dynamic_api`/`get_dynamic_api()` added;
+`_sanitize()` added (used by Phase 4 generic tools, unit-tested now). Tests rewritten: dynamic-client
+init assertion, structured-return + error-dict tests, `_sanitize` Secret-redaction unit test (4 pass).
+Decisions made during execution (flagged for review):
+  (1) Removed all `print(...)` debug calls — on STDIO transport stdout is the JSON-RPC channel, so
+      prints corrupt the protocol; errors now flow only through `{"error": ...}` returns.
+  (2) Dropped the now-meaningless `pretty` param from `get_logs` (it only set `json.dumps` indent,
+      irrelevant with structured output). Kept `timestamps` (affects actual log content).
+  (3) Added a repo `.flake8` (max-line-length=100, extend-ignore E203,W503) — flake8 had NO config
+      and defaulted to 79, contradicting black's 100; CI's flake8 step was already failing on the
+      original code (92 E501s). Aligning flake8 to black is required for the lint trio to pass.
+Also (per user request) `CLAUDE.md` added to `.gitignore`; PLAN.md handoff references updated to treat
+it as local-only. CLAUDE.md needs `git rm --cached` at commit time (still tracked from Phase 1).
+Verification output (real): flake8 exit 0; black --check exit 0 (3 files unchanged); isort exit 0;
+pytest 4 passed; import check prints `import ok`.
+Commit:
 
 ## Phase 4 — Generic read-only tools (full coverage + CRDs)
 
@@ -202,7 +221,8 @@ Done / notes:  Commit:
 ## Session handoff (for a fresh context)
 
 - Repo: `/Users/vg/experiments/k8s-mcp-server/kubernetes-readonly-mcp`; work branch `modernize-mcp-server`.
-- Read `CLAUDE.md` then this file; resume at the first phase whose checkboxes are unticked.
+- This `PLAN.md` is the committed source of truth. `CLAUDE.md` is gitignored (local-only); read it
+  first if present, then this file. Resume at the first phase whose checkboxes are unticked.
 - Hard rules: read-only only (never add mutating tools); Secret `data`/`stringData` never returned;
   every tool annotated read-only; tools return native objects; FastMCP 3.x; no emojis anywhere;
   commits carry no Co-Authored-By trailer.
