@@ -35,7 +35,10 @@ a README documenting today's MCP hosts.
 - **Coverage:** Hybrid — keep the 8 curated tools; add EKS-style generic tools
   `list_resource`, `get_resource`, `list_api_resources` (GET/LIST-only via the dynamic client).
 - **Output:** add read-only **tool annotations** to every tool and return **native Python objects**
-  (FastMCP emits structured content + schemas) instead of `json.dumps(...)` strings.
+  (FastMCP serializes them to JSON) instead of building `json.dumps(...)` strings by hand.
+  (Phase 6 correction: dict returns also populate `structured_content`; bare-list returns deliver
+  JSON via the text content block only — matching the AWS EKS MCP reference, which likewise emits no
+  `structured_content`. See the Phase 6 FINDING note.)
 - **Init:** remove the Q-CLI workaround; use a lazy module-level singleton `_get_manager()`
   (sync, fits the synchronous kubernetes client). No per-tool `resource` param.
 - **Secrets:** never return Secret `data`/`stringData`; only metadata + `type`. Enforced centrally
@@ -228,25 +231,74 @@ rule while keeping the link. (2) Two Amazon Q mentions remain, both in the Kiro 
 explicitly required by this phase's task list (successor framing + the `~/.aws/amazonq/mcp.json`
 migration pointer). Verification output (real): 4/4 JSON blocks parse OK; the 1 TOML block parses OK
 via the 3.12 venv and resolves to command="uvx", args=["kubernetes-readonly-mcp@latest"]; grep shows
-no stray "Amazon Q" beyond the two Kiro notes and no `FastMCP 2` / bad-CLI-example leftovers. Commit:
+no stray "Amazon Q" beyond the two Kiro notes and no `FastMCP 2` / bad-CLI-example leftovers.
+Commit: e147d1b
 
-## Phase 6 — Final verification & release prep
+## Phase 6 — Final verification & release prep  [STATUS: done, pending approval]
 
-- [ ] Full `pytest`, `flake8`, `black --check`, `isort --check`.
-- [ ] `python -m build` produces sdist + wheel without errors.
-- [ ] Live smoke test against a kind cluster (`kind create cluster`): start the server via an MCP
+- [x] Full `pytest`, `flake8`, `black --check`, `isort --check`.
+- [x] `python -m build` produces sdist + wheel without errors.
+- [x] Live smoke test against a kind cluster (`kind create cluster`): start the server via an MCP
       host (or FastMCP client) and confirm: `list_api_resources()` returns kinds;
       `list_resource(kind="Pod", namespace="kube-system")`;
       `list_resource(kind="Ingress", api_version="networking.k8s.io/v1")` (non-core);
       `get_resource(kind="Secret", name=<x>, namespace="kube-system")` returns **no data/stringData**;
       existing curated tools still work.
-- [ ] Record release note: bump done at `0.2.0`; publishing is via creating a GitHub release/tag
+- [x] Record release note: bump done at `0.2.0`; publishing is via creating a GitHub release/tag
       (triggers `publish.yml` -> PyPI). Do NOT publish without explicit user instruction.
 
 Verification:
 - All checks green with pasted output; smoke-test results recorded here.
 
-Done / notes:  Commit:
+Done / notes: All checks ran in the 3.12 `.venv`.
+- Lint/test trio (real output): `pytest -q` -> 9 passed; `flake8 src tests` exit 0; `black --check src tests`
+  exit 0 (3 files unchanged; benign py312-cannot-parse-py313 AST warning); `isort --check-only --profile
+  black src tests` exit 0.
+- Build (real output): `python -m build` -> "Successfully built kubernetes_readonly_mcp-0.2.0.tar.gz and
+  kubernetes_readonly_mcp-0.2.0-py3-none-any.whl". `twine check dist/*` -> both artifacts PASSED. `dist/`,
+  `build/`, `.venv`, `*.egg-info` are all gitignored (git status stays clean).
+- Smoke test (real output): created `kind` cluster `k8s-mcp-smoke` (node v1.35.0, 1 node Ready). Ran a
+  throwaway `smoke_test.py` driving the server through the in-memory `fastmcp.Client` (real MCP
+  dispatch + serialization path). 9/9 PASS:
+  (1) all 11 tools report readOnlyHint=True/destructiveHint=False;
+  (2) `list_api_resources()` -> 118 resources incl. Pod & Secret;
+  (3) `list_resource(Pod, kube-system)` -> 8 pods;
+  (4) `list_resource(Ingress, networking.k8s.io/v1)` non-core resolves -> empty list, no error
+      (cross-checked: direct dynamic client also returns 0 items; fresh cluster has no ingresses);
+  (5) `list_resource(Secret, kube-system)` -> 1 secret, no `data`/`stringData`;
+  (6) `get_resource(Secret, bootstrap-token-abcdef, kube-system)` -> keys {apiVersion, kind, metadata,
+      type}, NO data/stringData (redaction proven meaningful: `kubectl` shows that secret carries 6
+      base64 data fields of type bootstrap.kubernetes.io/token);
+  (7-9) curated `list_namespaces` (5 ns incl. default+kube-system), `list_nodes` (1 node, Ready),
+      `list_pods(kube-system)` (8 pods).
+  `smoke_test.py` is a throwaway verification script — NOT committed (deleted after the run). The kind
+  cluster is torn down post-verification (`kind delete cluster --name k8s-mcp-smoke`).
+- Release note: version is `0.2.0` (in `pyproject.toml` + `__init__.py`). Publishing is GitHub-release
+  triggered: `publish.yml` runs on `release: [created]` -> `python -m build` + `twine upload dist/*`
+  using the `PYPI_API_TOKEN` secret. Do NOT create a release / publish without explicit user go-ahead.
+
+FINDING flagged for review (structured output): the smoke test showed FastMCP emits real
+`structured_content`/`.data` only for the **dict-returning** tools (`get_resource`, `get_events`,
+`get_logs`, `get_pod_logs`). The **list-returning** tools (`list_pods`, `list_namespaces`,
+`list_nodes`, `list_deployments`, `list_services`, `list_resource`, `list_api_resources`) deliver
+their JSON only via the **text content block** (`structured_content` is None) — because they declare
+no return-type annotation, so FastMCP builds no output schema, and a bare JSON array is not a valid
+top-level structured-content object. The data is valid JSON every MCP client can read, so the tools
+are fully functional, but the earlier "FastMCP emits structured content + schemas" framing is only
+half-true for list tools. A naive `-> list[dict]` annotation would BREAK the error path (every tool
+also returns `{"error": ...}`, a dict, on failure), so a real fix needs a union/wrapper type and is
+outside the locked "no refactor" scope.
+RESOLUTION (researched the AWS EKS MCP server, the read-only surface we mirror): its `list_k8s_resources`
+/ `manage_k8s_resource` are typed `-> CallToolResult` and built by hand —
+`CallToolResult(isError=False, content=[TextContent(summary), TextContent(json.dumps(data.model_dump()))])`
+on success and `CallToolResult(isError=True, content=[TextContent(error_msg)])` on error. So the EKS
+reference ALSO delivers list data as JSON in a text content block and emits NO `structured_content`;
+it unifies success/error via the native `isError` flag rather than an error dict. Our list tools'
+JSON-in-text-content is therefore the same observable behavior as the reference. User decision:
+**accept as-is**; corrected the overstated "emits structured content + schemas" wording in this
+Decisions section and in `CLAUDE.md`. (An EKS-style richer envelope — `{kind,count,items}` + Pydantic
+models + `CallToolResult`/`isError` — would be a separate, out-of-scope future phase.)
+Commit:
 
 ---
 
