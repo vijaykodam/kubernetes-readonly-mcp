@@ -653,6 +653,133 @@ def list_nodes():
         return {"error": str(e)}
 
 
+@mcp.tool(
+    description=(
+        "List resources of any kind (including CRDs) via the dynamic client. "
+        "GET/LIST only; never mutates."
+    ),
+    annotations=_ro("List Resource"),
+)
+def list_resource(
+    kind: str,
+    api_version: str = "v1",
+    namespace: Optional[str] = None,
+    label_selector: Optional[str] = None,
+    field_selector: Optional[str] = None,
+):
+    """
+    List resources of an arbitrary kind using the dynamic client.
+
+    Works for built-in kinds and Custom Resources alike. Secret values are
+    always redacted (see _sanitize), so this cannot be used to read Secret data.
+
+    Args:
+        kind (str): Resource kind, e.g. 'Pod', 'Ingress', 'MyCustomResource'.
+        api_version (str, optional): Group/version, e.g. 'v1' (default) or
+                                    'networking.k8s.io/v1', 'apps/v1'.
+        namespace (str, optional): Namespace to scope to. If omitted, lists
+                                   across all namespaces (or cluster-scoped).
+        label_selector (str, optional): Label selector, e.g. 'app=nginx'.
+        field_selector (str, optional): Field selector, e.g. 'metadata.name=foo'.
+
+    Returns:
+        A list of sanitized resource dicts, or a dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        api = dyn.resources.get(api_version=api_version, kind=kind)
+        res = api.get(
+            namespace=namespace,
+            label_selector=label_selector,
+            field_selector=field_selector,
+        )
+        return [_sanitize(item.to_dict(), kind) for item in res.items]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description=(
+        "Get a single resource of any kind (including CRDs) by name via the "
+        "dynamic client. GET only; never mutates."
+    ),
+    annotations=_ro("Get Resource"),
+)
+def get_resource(
+    kind: str,
+    name: str,
+    api_version: str = "v1",
+    namespace: Optional[str] = None,
+):
+    """
+    Get a single resource of an arbitrary kind by name using the dynamic client.
+
+    Works for built-in kinds and Custom Resources alike. If kind is 'Secret',
+    the data/stringData fields are redacted (see _sanitize).
+
+    Args:
+        kind (str): Resource kind, e.g. 'Pod', 'ConfigMap', 'MyCustomResource'.
+        name (str): The resource name.
+        api_version (str, optional): Group/version, e.g. 'v1' (default) or
+                                    'apps/v1'.
+        namespace (str, optional): Namespace for namespaced resources.
+
+    Returns:
+        A sanitized resource dict, or a dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        api = dyn.resources.get(api_version=api_version, kind=kind)
+        res = api.get(name=name, namespace=namespace)
+        return _sanitize(res.to_dict(), kind)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description=(
+        "Discover which resource kinds (including CRDs) the cluster exposes "
+        "and can be listed. Read-only discovery."
+    ),
+    annotations=_ro("List API Resources"),
+)
+def list_api_resources():
+    """
+    Discover the listable resource kinds available on the cluster.
+
+    Uses dynamic discovery to enumerate every resource whose verbs include
+    'list', so callers know what they can pass to list_resource/get_resource
+    (including CRDs). Entries are deduplicated by (group_version, kind).
+
+    Returns:
+        A list of dicts with group_version, kind, namespaced, and verbs, or a
+        dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        resources = []
+        seen = set()
+        for resource in dyn.resources.search():
+            verbs = resource.verbs or []
+            if "list" not in verbs:
+                continue
+            key = (resource.group_version, resource.kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            resources.append(
+                {
+                    "group_version": resource.group_version,
+                    "kind": resource.kind,
+                    "namespaced": resource.namespaced,
+                    "verbs": list(verbs),
+                }
+            )
+        return resources
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def main():
     """Entry point for the MCP server when run as a script."""
     mcp.run()  # Default: uses STDIO transport.

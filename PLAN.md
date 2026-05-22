@@ -147,24 +147,38 @@ Also (per user request) `CLAUDE.md` added to `.gitignore`; PLAN.md handoff refer
 it as local-only. CLAUDE.md needs `git rm --cached` at commit time (still tracked from Phase 1).
 Verification output (real): flake8 exit 0; black --check exit 0 (3 files unchanged); isort exit 0;
 pytest 4 passed; import check prints `import ok`.
-Commit:
+Commit: 7753dd4
 
-## Phase 4 — Generic read-only tools (full coverage + CRDs)
+## Phase 4 — Generic read-only tools (full coverage + CRDs)  [STATUS: done]
 
-- [ ] `list_resource(kind, api_version="v1", namespace=None, label_selector=None, field_selector=None)`
+- [x] `list_resource(kind, api_version="v1", namespace=None, label_selector=None, field_selector=None)`
       -> `dyn.resources.get(api_version, kind).get(...)`, return `[_sanitize(i.to_dict(), kind) for i in res.items]`.
-- [ ] `get_resource(kind, name, api_version="v1", namespace=None)` -> single sanitized dict.
-- [ ] `list_api_resources()` -> discover via `dyn.resources.search()`; return list of
+- [x] `get_resource(kind, name, api_version="v1", namespace=None)` -> single sanitized dict.
+- [x] `list_api_resources()` -> discover via `dyn.resources.search()`; return list of
       `{group_version, kind, namespaced, verbs}` for resources whose verbs include `list` (deduped).
-- [ ] All three annotated read-only; GET/LIST only — never call create/replace/patch/delete.
+- [x] All three annotated read-only; GET/LIST only — never call create/replace/patch/delete.
       Wrap in try/except -> `{"error": ...}`.
-- [ ] Tests: mocked dynamic client for the three tools; an explicit **Secret redaction** test
+- [x] Tests: mocked dynamic client for the three tools; an explicit **Secret redaction** test
       proving `data`/`stringData` are absent from output.
 
 Verification:
 - `pytest -q` passes (incl. Secret-redaction test); lint trio clean.
 
-Done / notes:  Commit:
+Done / notes: Added three generic tools after `list_nodes`, all using `_get_manager().get_dynamic_api()`
+and the verified two-step dynamic-client pattern (`dyn.resources.get(api_version=, kind=)` for discovery,
+then `.get(...)` for the API call). `kind` is passed to `_sanitize()` from the tool argument (not read
+off each item), so Secret redaction holds even when list items omit their own `kind`. `list_api_resources`
+filters on `"list" in (verbs or [])` (verbs can be None) and dedupes by `(group_version, kind)`.
+Decisions (flagged): (1) generic-tool errors return `{"error": str(e)}` matching the curated list tools'
+style (no 404-specific handling — the dynamic client surfaces useful messages directly). (2) `list_resource`
+with `namespace=None` lists across all namespaces / cluster scope, no special-casing needed.
+Tests added (5): list_resource native+sanitized, list_resource Secret redaction, get_resource Secret
+redaction, list_api_resources filter+dedup+None-verbs, generic-tool error-dict. API surface verified
+against installed kubernetes 36.0.0 (Resource has group_version/kind/namespaced/verbs; ResourceInstance
+has to_dict). Verification output (real): pytest 9 passed; flake8 exit 0; black --check 3 files unchanged
+(benign py312-vs-py313 AST-check warning); isort clean; import ok. Registered-tool check: all 11 tools
+(8 curated + 3 generic) report readOnly=True, destructive=False.
+Commit:
 
 ## Phase 5 — README rewrite
 

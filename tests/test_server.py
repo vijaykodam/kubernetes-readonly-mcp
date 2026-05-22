@@ -8,7 +8,10 @@ import pytest
 from kubernetes_readonly_mcp.server import (
     KubernetesManager,
     _sanitize,
+    get_resource,
+    list_api_resources,
     list_namespaces,
+    list_resource,
 )
 
 
@@ -86,3 +89,119 @@ def test_sanitize_redacts_secret_and_managed_fields():
     # Non-sensitive fields are preserved.
     assert out["type"] == "Opaque"
     assert out["metadata"]["name"] == "s"
+
+
+def _fake_manager_with_dynamic():
+    """Build a fake manager whose dynamic client is itself a MagicMock.
+
+    Returns (fake_manager, fake_resource) where fake_resource stands in for the
+    discovered Resource (the object .get()/.search() are called on).
+    """
+    fake_resource = MagicMock()
+    fake_manager = MagicMock()
+    fake_manager.get_dynamic_api().resources.get.return_value = fake_resource
+    return fake_manager, fake_resource
+
+
+def test_list_resource_returns_sanitized_items():
+    """list_resource returns native dicts via the dynamic client, sanitized."""
+    item = MagicMock()
+    item.to_dict.return_value = {
+        "kind": "Ingress",
+        "metadata": {"name": "web", "managedFields": [{"x": 1}]},
+    }
+
+    fake_manager, fake_resource = _fake_manager_with_dynamic()
+    fake_resource.get.return_value.items = [item]
+
+    with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
+        result = list_resource(kind="Ingress", api_version="networking.k8s.io/v1")
+
+    # Discovery used the caller-supplied api_version + kind.
+    fake_manager.get_dynamic_api().resources.get.assert_called_once_with(
+        api_version="networking.k8s.io/v1", kind="Ingress"
+    )
+    assert isinstance(result, list)
+    assert result[0]["metadata"]["name"] == "web"
+    # managedFields always stripped by _sanitize.
+    assert "managedFields" not in result[0]["metadata"]
+
+
+def test_list_resource_redacts_secret_data():
+    """Listing Secrets via the generic tool never returns data/stringData."""
+    item = MagicMock()
+    item.to_dict.return_value = {
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {"name": "s"},
+        "data": {"password": "c2VjcmV0"},
+        "stringData": {"password": "secret"},
+    }
+
+    fake_manager, fake_resource = _fake_manager_with_dynamic()
+    fake_resource.get.return_value.items = [item]
+
+    with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
+        result = list_resource(kind="Secret")
+
+    assert "data" not in result[0]
+    assert "stringData" not in result[0]
+    assert result[0]["type"] == "Opaque"
+
+
+def test_get_resource_redacts_secret_data():
+    """get_resource(kind='Secret') returns metadata/type but never the values."""
+    fake_manager, fake_resource = _fake_manager_with_dynamic()
+    fake_resource.get.return_value.to_dict.return_value = {
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {"name": "db-creds", "managedFields": [{"x": 1}]},
+        "data": {"password": "c2VjcmV0"},
+        "stringData": {"password": "secret"},
+    }
+
+    with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
+        result = get_resource(kind="Secret", name="db-creds", namespace="kube-system")
+
+    fake_resource.get.assert_called_once_with(name="db-creds", namespace="kube-system")
+    assert "data" not in result
+    assert "stringData" not in result
+    assert "managedFields" not in result["metadata"]
+    assert result["type"] == "Opaque"
+    assert result["metadata"]["name"] == "db-creds"
+
+
+def test_list_api_resources_filters_and_dedupes():
+    """Only listable kinds are returned, deduplicated by (group_version, kind)."""
+    pod = MagicMock(group_version="v1", kind="Pod", namespaced=True, verbs=["get", "list"])
+    # Duplicate of Pod (discovery often yields repeats) should collapse to one.
+    pod_dup = MagicMock(group_version="v1", kind="Pod", namespaced=True, verbs=["get", "list"])
+    # Not listable -> excluded.
+    binding = MagicMock(group_version="v1", kind="Binding", namespaced=True, verbs=["create"])
+    # verbs=None must not raise.
+    weird = MagicMock(group_version="v1", kind="Weird", namespaced=False, verbs=None)
+
+    fake_manager = MagicMock()
+    fake_manager.get_dynamic_api().resources.search.return_value = [pod, pod_dup, binding, weird]
+
+    with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
+        result = list_api_resources()
+
+    kinds = [r["kind"] for r in result]
+    assert kinds == ["Pod"]
+    assert result[0] == {
+        "group_version": "v1",
+        "kind": "Pod",
+        "namespaced": True,
+        "verbs": ["get", "list"],
+    }
+
+
+def test_generic_tools_errors_return_dict():
+    """Dynamic-client failures surface as {'error': ...} rather than raising."""
+    fake_manager = MagicMock()
+    fake_manager.get_dynamic_api().resources.get.side_effect = RuntimeError("no api")
+
+    with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
+        assert list_resource(kind="Bogus") == {"error": "no api"}
+        assert get_resource(kind="Bogus", name="x") == {"error": "no api"}
