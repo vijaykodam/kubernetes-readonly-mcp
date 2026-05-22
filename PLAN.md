@@ -71,7 +71,7 @@ a README documenting today's MCP hosts.
 
 ---
 
-## Phase 1 — Scaffolding (branch, PLAN.md, CLAUDE.md)  [STATUS: in progress]
+## Phase 1 — Scaffolding (branch, PLAN.md, CLAUDE.md)  [STATUS: done]
 
 - [x] Create branch `modernize-mcp-server` off `main`.
 - [x] Create repo `PLAN.md` (this file).
@@ -84,7 +84,7 @@ Verification:
 - `git branch --show-current` == `modernize-mcp-server`.
 - `PLAN.md` and `CLAUDE.md` exist; `wc -w CLAUDE.md` < 500.
 
-Done / notes: bootstrapping commit for the modernization work. Commit: <fill after commit>
+Done / notes: bootstrapping commit for the modernization work. Commit: 44a5cd4
 
 ## Phase 2 — Dependencies & packaging
 
