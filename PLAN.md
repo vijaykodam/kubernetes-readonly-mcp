@@ -88,12 +88,12 @@ Done / notes: bootstrapping commit for the modernization work. Commit: 44a5cd4
 
 ## Phase 2 — Dependencies & packaging
 
-- [ ] `pyproject.toml` `dependencies = ["fastmcp>=3.3", "kubernetes>=36.0.0"]`.
-- [ ] `requires-python = ">=3.10"`.
-- [ ] Classifiers add Python 3.12, 3.13 (keep 3.10, 3.11); `[tool.black] target-version` -> py310..py313.
-- [ ] `version = "0.2.0"`.
-- [ ] `src/kubernetes_readonly_mcp/__init__.py`: `__version__ = "0.2.0"`.
-- [ ] Update CI matrix in `.github/workflows/test.yml` to `['3.10','3.11','3.12','3.13']`.
+- [x] `pyproject.toml` `dependencies = ["fastmcp>=3.3", "kubernetes>=36.0.0"]`.
+- [x] `requires-python = ">=3.10"`.
+- [x] Classifiers add Python 3.12, 3.13 (keep 3.10, 3.11); `[tool.black] target-version` -> py310..py313.
+- [x] `version = "0.2.0"`.
+- [x] `src/kubernetes_readonly_mcp/__init__.py`: `__version__ = "0.2.0"`.
+- [x] Update CI matrix in `.github/workflows/test.yml` to `['3.10','3.11','3.12','3.13']`.
 
 Verification:
 - `pip install -e ".[dev]"` succeeds on Python 3.10+.
@@ -101,7 +101,11 @@ Verification:
 - Note: server.py still imports the bundled FastMCP here; that stays importable (mcp is a transitive
   dep of fastmcp), so the repo remains runnable until Phase 3.
 
-Done / notes:  Commit:
+Done / notes: System Python is 3.9, so verified in a `uv`-provisioned 3.12 venv (`.venv`, gitignored).
+`uv pip install -e ".[dev]"` succeeded; resolved fastmcp 3.3.1, kubernetes 36.0.0, mcp 1.27.1 (transitive).
+`__version__` prints `0.2.0`. Confirmed the Phase 2 note: `from mcp.server.fastmcp import FastMCP` and
+`import kubernetes_readonly_mcp.server` both still import OK (repo runnable until Phase 3). Only
+`pyproject.toml`, `__init__.py`, `.github/workflows/test.yml` changed. Commit:
 
 ## Phase 3 — Core rewrite: framework, init, annotations, structured output (existing 8 tools)
 
