@@ -55,25 +55,31 @@ Different MCP Hosts (AI assistants or CLIs that support MCP) manage their MCP se
 
 Host-specific, copy-paste configuration follows below. You can find more information about the Model Context Protocol at:
 
-- [Model Context Protocol Documentation](https://modelcontextprotocol.io/)
+- [Model Context Protocol Documentation](https://modelcontextprotocol.io/docs/getting-started/intro)
 - Example Host Documentation:
-    1. Claude Code: [MCP](https://docs.anthropic.com/en/docs/claude-code/mcp)
-    2. Codex CLI: [MCP](https://github.com/openai/codex)
-    3. Kiro CLI: [MCP Configuration](https://kiro.dev/docs/mcp/)
-    4. Antigravity: MCP Servers (configured via the in-app "Manage MCP Servers" view)
-    5. Claude Desktop: [User Quickstart](https://modelcontextprotocol.io/quickstart/user)
+    1. Claude Code: [MCP](https://code.claude.com/docs/en/mcp)
+    2. Codex CLI: [MCP](https://developers.openai.com/learn/docs-mcp)
+    3. Kiro CLI: [MCP Configuration](https://kiro.dev/docs/cli/mcp/configuration/)
+    4. Antigravity: [Editor MCP](https://www.antigravity.google/docs/mcp) and [CLI MCP](https://antigravity.google/docs/cli-plugins)
+    5. Claude Desktop: [Connect to local MCP servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers)
 
 ## Host Setup
 
 ### 1. Claude Code
 
-Add the server with the CLI (the `--` separates Claude Code's own flags from the command to run; STDIO is the default transport):
+Add the server with the CLI (the `--` separates Claude Code's own flags from the command to run; STDIO is the default transport). Without an explicit scope, Claude Code stores this as a local, private server for the current project:
 
 ```bash
 claude mcp add kubernetes-readonly-mcp -- uvx kubernetes-readonly-mcp@latest
 ```
 
-To share the server with a project (committed to the repo), create a `.mcp.json` at the project root:
+To share the server with a project (committed to the repo), add it with project scope:
+
+```bash
+claude mcp add --scope project kubernetes-readonly-mcp -- uvx kubernetes-readonly-mcp@latest
+```
+
+Or create a `.mcp.json` at the project root:
 
 ```json
 {
@@ -88,7 +94,13 @@ To share the server with a project (committed to the repo), create a `.mcp.json`
 
 ### 2. Codex CLI
 
-Codex CLI reads MCP servers from `~/.codex/config.toml`. Add a table:
+Add the server with the CLI:
+
+```bash
+codex mcp add kubernetes-readonly-mcp -- uvx kubernetes-readonly-mcp@latest
+```
+
+Codex CLI and the Codex IDE extension share MCP configuration. You can also add the server directly to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.kubernetes-readonly-mcp]
@@ -96,11 +108,17 @@ command = "uvx"
 args = ["kubernetes-readonly-mcp@latest"]
 ```
 
-You can also manage servers with the `codex mcp` subcommands. The Codex CLI and IDE extension share this configuration.
+Use `codex mcp list` to verify it is configured.
 
 ### 3. Kiro CLI
 
-Kiro CLI is the successor to the now-deprecated Amazon Q CLI. Configure servers in `~/.kiro/settings/mcp.json` (user scope) or `<project>/.kiro/settings/mcp.json` (project scope):
+Kiro CLI is the rebranded next update of Amazon Q Developer CLI. Add the server with the CLI:
+
+```bash
+kiro-cli mcp add --name kubernetes-readonly-mcp --scope global --command uvx --args kubernetes-readonly-mcp@latest
+```
+
+Or configure servers in `~/.kiro/settings/mcp.json` (user scope) or `<project>/.kiro/settings/mcp.json` (project scope):
 
 ```json
 {
@@ -118,7 +136,9 @@ If you previously used Amazon Q, migrate your old `~/.aws/amazonq/mcp.json` entr
 
 ### 4. Antigravity (Google)
 
-Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json` (on Windows, `C:\Users\<USER>\.gemini\antigravity\mcp_config.json`):
+Antigravity Editor reads MCP servers from `~/.gemini/antigravity/mcp_config.json` (on Windows, `C:\Users\<USER>\.gemini\antigravity\mcp_config.json`). You can open this file from the app: the "..." menu -> MCP Servers -> Manage MCP Servers -> View raw config.
+
+Antigravity CLI v2.0+ also supports MCP. Open the CLI MCP manager with `/mcp`, or add the same server block to `~/.gemini/antigravity-cli/mcp_config.json` for global CLI setup. For a workspace-local CLI setup, use `.agents/mcp_config.json` in the active project.
 
 ```json
 {
@@ -130,8 +150,6 @@ Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json` (on W
   }
 }
 ```
-
-You can open this file from the app: the "..." menu -> MCP Servers -> Manage MCP Servers -> View raw config.
 
 ### 5. Claude Desktop
 

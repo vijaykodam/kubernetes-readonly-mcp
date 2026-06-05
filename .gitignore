@@ -95,6 +95,8 @@ ENV/
 env.bak/
 venv.bak/
 CLAUDE.md
+PLAN.md
+INSTALL.md
 
 # Spyder project settings
 .spyderproject
