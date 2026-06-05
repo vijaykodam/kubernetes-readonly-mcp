@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastmcp import FastMCP
 from kubernetes import client, config, dynamic
+from kubernetes.dynamic.resource import ResourceList
 from mcp.types import ToolAnnotations
 
 # Create an MCP server for read-only operations against a Kubernetes cluster.
@@ -85,7 +86,10 @@ def _sanitize(obj_dict, kind):
 
     - Always drops ``metadata.managedFields`` (large, low value).
     - For ``Secret`` kinds, removes ``data`` and ``stringData`` so secret
-      values are never returned; only metadata and ``type`` remain.
+      values are never returned; only metadata and ``type`` remain. Also drops
+      the ``kubectl.kubernetes.io/last-applied-configuration`` annotation, which
+      embeds the full original manifest (including the redacted values) when the
+      Secret was created with client-side ``kubectl apply``.
 
     This is the single chokepoint enforcing Secret redaction, so it cannot be
     bypassed (e.g. via a generic ``get_resource(kind="Secret")`` call).
@@ -98,6 +102,12 @@ def _sanitize(obj_dict, kind):
     if kind == "Secret":
         obj_dict.pop("data", None)
         obj_dict.pop("stringData", None)
+        # kubectl client-side apply stores the full original manifest (incl.
+        # data/stringData) here, so drop it to avoid leaking Secret values.
+        if isinstance(metadata, dict):
+            annotations = metadata.get("annotations")
+            if isinstance(annotations, dict):
+                annotations.pop("kubectl.kubernetes.io/last-applied-configuration", None)
     return obj_dict
 
 
@@ -760,6 +770,11 @@ def list_api_resources():
         resources = []
         seen = set()
         for resource in dyn.resources.search():
+            # Skip synthetic ResourceList entries (PodList, SecretList, ...).
+            # They inherit the base 'list' verb but ResourceList.get() expects a
+            # body, so list_resource(kind="PodList") would fail. Don't advertise.
+            if isinstance(resource, ResourceList):
+                continue
             verbs = resource.verbs or []
             if "list" not in verbs:
                 continue

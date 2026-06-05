@@ -4,6 +4,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kubernetes.dynamic.resource import ResourceList
 
 from kubernetes_readonly_mcp.server import (
     KubernetesManager,
@@ -91,6 +92,50 @@ def test_sanitize_redacts_secret_and_managed_fields():
     assert out["metadata"]["name"] == "s"
 
 
+def test_sanitize_strips_last_applied_configuration_for_secret():
+    """_sanitize drops the kubectl apply annotation that can embed Secret values."""
+    leaked = (
+        '{"apiVersion":"v1","kind":"Secret",'
+        '"data":{"password":"c2VjcmV0"},'
+        '"stringData":{"password":"secret"}}'
+    )
+    obj = {
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {
+            "name": "s",
+            "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": leaked,
+                "meta.example.com/keep": "ok",
+            },
+        },
+    }
+
+    out = _sanitize(obj, "Secret")
+    annotations = out["metadata"]["annotations"]
+
+    # The leak vector is removed, benign annotations are preserved.
+    assert "kubectl.kubernetes.io/last-applied-configuration" not in annotations
+    assert annotations["meta.example.com/keep"] == "ok"
+
+
+def test_sanitize_keeps_last_applied_configuration_for_non_secret():
+    """Non-Secret kinds keep the kubectl apply annotation (scope is Secret-only)."""
+    obj = {
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "c",
+            "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": "{}",
+            },
+        },
+    }
+
+    out = _sanitize(obj, "ConfigMap")
+
+    assert "kubectl.kubernetes.io/last-applied-configuration" in out["metadata"]["annotations"]
+
+
 def _fake_manager_with_dynamic():
     """Build a fake manager whose dynamic client is itself a MagicMock.
 
@@ -155,7 +200,15 @@ def test_get_resource_redacts_secret_data():
     fake_resource.get.return_value.to_dict.return_value = {
         "kind": "Secret",
         "type": "Opaque",
-        "metadata": {"name": "db-creds", "managedFields": [{"x": 1}]},
+        "metadata": {
+            "name": "db-creds",
+            "managedFields": [{"x": 1}],
+            "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": (
+                    '{"data":{"password":"c2VjcmV0"}}'
+                ),
+            },
+        },
         "data": {"password": "c2VjcmV0"},
         "stringData": {"password": "secret"},
     }
@@ -167,6 +220,10 @@ def test_get_resource_redacts_secret_data():
     assert "data" not in result
     assert "stringData" not in result
     assert "managedFields" not in result["metadata"]
+    # The kubectl apply annotation (which embeds the redacted values) is gone too.
+    assert (
+        "kubectl.kubernetes.io/last-applied-configuration" not in result["metadata"]["annotations"]
+    )
     assert result["type"] == "Opaque"
     assert result["metadata"]["name"] == "db-creds"
 
@@ -180,15 +237,31 @@ def test_list_api_resources_filters_and_dedupes():
     binding = MagicMock(group_version="v1", kind="Binding", namespaced=True, verbs=["create"])
     # verbs=None must not raise.
     weird = MagicMock(group_version="v1", kind="Weird", namespaced=False, verbs=None)
+    # Synthetic ResourceList -> excluded even though it inherits the list verb.
+    pod_list = MagicMock(
+        spec=ResourceList,
+        group_version="v1",
+        kind="PodList",
+        namespaced=True,
+        verbs=["get", "list"],
+    )
 
     fake_manager = MagicMock()
-    fake_manager.get_dynamic_api().resources.search.return_value = [pod, pod_dup, binding, weird]
+    fake_manager.get_dynamic_api().resources.search.return_value = [
+        pod,
+        pod_dup,
+        binding,
+        weird,
+        pod_list,
+    ]
 
     with patch("kubernetes_readonly_mcp.server._get_manager", return_value=fake_manager):
         result = list_api_resources()
 
     kinds = [r["kind"] for r in result]
     assert kinds == ["Pod"]
+    # Synthetic *List kinds are never advertised.
+    assert "PodList" not in kinds
     assert result[0] == {
         "group_version": "v1",
         "kind": "Pod",
