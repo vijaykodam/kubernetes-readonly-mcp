@@ -4,15 +4,17 @@ A Model Context Protocol (MCP) server for safely interacting with Kubernetes clu
 
 This MCP server was created to provide a secure way to interact with Kubernetes clusters without allowing any create, update, or delete operations. It only exposes read-only APIs to ensure your clusters remain safe while still enabling AI assistants to help you monitor and troubleshoot your Kubernetes resources.
 
-Built with FastMCP 2.0 and the official Kubernetes Python client library.
+Built with [FastMCP 3.x](https://gofastmcp.com/) (the standalone `fastmcp` framework) and the official Kubernetes Python client library. Secret values are never exposed: for any `Secret`, only its metadata and `type` are returned, never `data` or `stringData`.
 
 ## Blog post and Demo
 
-Watch the demo running the MCP server using Amazon Q CLI at https://vijay.eu/posts/building-my-first-mcp-server/
+Watch the demo and read the write-up at https://vijay.eu/posts/building-my-first-mcp-server/
 
 ## Features
 
-This MCP server provides the following read-only tools:
+This MCP server provides the following read-only tools. Every tool is annotated read-only (`readOnlyHint=True`, `destructiveHint=False`) and returns native structured data.
+
+### Curated tools
 
 - `list_pods`: List all pods in a namespace or across all namespaces
 - `list_deployments`: List all deployments in a specified namespace
@@ -23,92 +25,142 @@ This MCP server provides the following read-only tools:
 - `get_logs`: Get logs from pods, deployments, jobs, or resources matching a label selector
 - `list_nodes`: List all nodes in the cluster and their status
 
+### Generic tools (any kind, including CRDs)
+
+These use the Kubernetes dynamic client, so they work for built-in kinds and Custom Resources alike. They are GET/LIST only and never mutate the cluster.
+
+- `list_resource`: List resources of any `kind` (e.g. `Ingress`, `ConfigMap`, a CRD), optionally scoped by `api_version`, `namespace`, `label_selector`, and `field_selector`.
+- `get_resource`: Get a single resource of any `kind` by `name` (with optional `api_version` and `namespace`).
+- `list_api_resources`: Discover which resource kinds the cluster exposes and can be listed (returns `group_version`, `kind`, `namespaced`, and `verbs`), so you know what to pass to the tools above.
+
+> Secret safety: even `list_resource`/`get_resource` with `kind="Secret"` return only metadata and `type` — the `data` and `stringData` fields are always stripped before output.
+
 ## Prerequisites
 
-- Python 3.10 or higher needed.
-- uv is installed. If not, install it using `pip install uv`
+- Python 3.10 or higher.
+- `uv` is installed (it provides `uvx`). If not, install it with `pip install uv` (or `pipx install uv`).
 - Kubernetes cluster up and running.
-- Kubeconfig configured with default context.
-- For demo purposes, you can use kind and docker to setup a local k8s cluster running quickly in your local machine. Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
+- Kubeconfig configured with a default context.
+- For demo purposes, you can use kind and Docker to set up a local Kubernetes cluster quickly on your machine. Refer to this quickstart: https://kind.sigs.k8s.io/docs/user/quick-start/
 
 ## General MCP Host Configuration
 
-Different MCP Hosts (like various AI assistants or CLIs that support MCP) manage their MCP Server configurations in unique ways. Generally, you'll need to inform your MCP Host how to start the `kubernetes-readonly-mcp` server.
+Different MCP Hosts (AI assistants or CLIs that support MCP) manage their MCP server configurations in different ways. Generally, you tell your MCP Host how to start the `kubernetes-readonly-mcp` server. This involves:
 
-This typically involves:
-- Specifying the command to run the server. For `kubernetes-readonly-mcp`, this is often `uvx kubernetes-readonly-mcp@latest`, which uses `uvx` to download and run the package from PyPI.
-- Providing any necessary arguments.
-- Setting a working directory if required.
+- The command to run the server. For `kubernetes-readonly-mcp` this is `uvx kubernetes-readonly-mcp@latest`, which uses `uvx` to download and run the package from PyPI.
+- Any necessary arguments.
+- A working directory, if the host requires one.
 
-Please consult the documentation for your specific MCP Host on how to add and configure new MCP servers. For a detailed example of configuring an MCP server, see the "Amazon Q CLI Setup" section below, which shows how to set up this server with Amazon Q.
+`uvx` handles downloading and running `kubernetes-readonly-mcp` on first invocation; no separate install step is needed. The server communicates over STDIO.
 
-You can find more information about the Model Context Protocol and how different clients might implement it at:
+Host-specific, copy-paste configuration follows below. You can find more information about the Model Context Protocol at:
+
 - [Model Context Protocol Documentation](https://modelcontextprotocol.io/)
 - Example Host Documentation:
-    1. Claude Desktop: [User Quickstart](https://modelcontextprotocol.io/quickstart/user)
-    2. Amazon Q CLI: [MCP Configuration](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp-configuration.html)
+    1. Claude Code: [MCP](https://docs.anthropic.com/en/docs/claude-code/mcp)
+    2. Codex CLI: [MCP](https://github.com/openai/codex)
+    3. Kiro CLI: [MCP Configuration](https://kiro.dev/docs/mcp/)
+    4. Antigravity: MCP Servers (configured via the in-app "Manage MCP Servers" view)
+    5. Claude Desktop: [User Quickstart](https://modelcontextprotocol.io/quickstart/user)
 
-Verification of the setup will also depend on your MCP Host. Typically, after configuration, the MCP server and its tools should become available within the host's interface.
+## Host Setup
 
-## Amazon Q CLI Setup
+### 1. Claude Code
 
-This section guides you through setting up the `kubernetes-readonly-mcp` server with the Amazon Q CLI.
+Add the server with the CLI (the `--` separates Claude Code's own flags from the command to run; STDIO is the default transport):
 
-### 1. Install Amazon Q CLI
+```bash
+claude mcp add kubernetes-readonly-mcp -- uvx kubernetes-readonly-mcp@latest
+```
 
-If you haven't already, install the Amazon Q CLI. Please follow the official installation instructions provided in the [Amazon Q Developer Guide](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html).
+To share the server with a project (committed to the repo), create a `.mcp.json` at the project root:
 
-### 2. Configure MCP Server for Amazon Q CLI
+```json
+{
+  "mcpServers": {
+    "kubernetes-readonly-mcp": {
+      "command": "uvx",
+      "args": ["kubernetes-readonly-mcp@latest"]
+    }
+  }
+}
+```
 
-You need to tell Amazon Q CLI how to run the `kubernetes-readonly-mcp` server. Create or update your MCP configuration file at `~/.aws/amazonq/mcp.json`.
+### 2. Codex CLI
 
-Add the following entry to the `mcpServers` object:
+Codex CLI reads MCP servers from `~/.codex/config.toml`. Add a table:
+
+```toml
+[mcp_servers.kubernetes-readonly-mcp]
+command = "uvx"
+args = ["kubernetes-readonly-mcp@latest"]
+```
+
+You can also manage servers with the `codex mcp` subcommands. The Codex CLI and IDE extension share this configuration.
+
+### 3. Kiro CLI
+
+Kiro CLI is the successor to the now-deprecated Amazon Q CLI. Configure servers in `~/.kiro/settings/mcp.json` (user scope) or `<project>/.kiro/settings/mcp.json` (project scope):
+
 ```json
 {
   "mcpServers": {
     "kubernetes-readonly-mcp": {
       "command": "uvx",
       "args": ["kubernetes-readonly-mcp@latest"],
-      "workingDirectory": "~/",
-      "userDocs": {
-        "overview": "Provides read-only access to Kubernetes cluster information. Allows listing of pods, deployments, services, namespaces, nodes, and fetching logs."
-      }
+      "disabled": false
     }
-    // Add other MCP servers here if you have them
   }
 }
 ```
-If the file or `mcpServers` object already exists, merge this configuration. Ensure the JSON is valid.
 
-### 3. Install/Update `kubernetes-readonly-mcp`
+If you previously used Amazon Q, migrate your old `~/.aws/amazonq/mcp.json` entries to `~/.kiro/settings/mcp.json`.
 
-The MCP configuration above uses `uvx` to run the `kubernetes-readonly-mcp`. `uvx` will automatically download and run the latest version of the package from PyPI if it's not already available in its cache or if a newer version is published.
+### 4. Antigravity (Google)
 
-To ensure you have `uv` (which provides `uvx`), install it if you haven't already:
-```bash
-pip install uv
+Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json` (on Windows, `C:\Users\<USER>\.gemini\antigravity\mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "kubernetes-readonly-mcp": {
+      "command": "uvx",
+      "args": ["kubernetes-readonly-mcp@latest"]
+    }
+  }
+}
 ```
-Or, for isolated installation:
-```bash
-pipx install uv
+
+You can open this file from the app: the "..." menu -> MCP Servers -> Manage MCP Servers -> View raw config.
+
+### 5. Claude Desktop
+
+Edit `claude_desktop_config.json` (on macOS, `~/Library/Application Support/Claude/claude_desktop_config.json`; on Windows, `%APPDATA%\Claude\claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "kubernetes-readonly-mcp": {
+      "command": "uvx",
+      "args": ["kubernetes-readonly-mcp@latest"]
+    }
+  }
+}
 ```
 
-`uvx` will handle the installation of `kubernetes-readonly-mcp` when it's first invoked by the Amazon Q CLI.
+Restart Claude Desktop after editing so it picks up the new server.
 
-### 4. Verify MCP Server with `uvx`
+## Verifying the setup
 
-Before using it with Amazon Q CLI, you can directly test if `uvx` can run the MCP server. This helps confirm that `uv` is installed correctly and the package can be fetched.
+`kubernetes-readonly-mcp` is a STDIO MCP server: running it starts a process that speaks the MCP protocol over standard input/output and waits for an MCP host to connect. It does not take a tool name as a command-line argument.
 
-Open your terminal and run:
+To confirm `uvx` can fetch and launch the package, run:
+
 ```bash
-uvx kubernetes-readonly-mcp@latest list_namespaces
+uvx kubernetes-readonly-mcp@latest
 ```
-This command attempts to run the `list_namespaces` tool from the `kubernetes-readonly-mcp` server.
-If successful, you should see a JSON output listing the namespaces in your default Kubernetes context (or an empty list if no namespaces are found, or an error if a K8s cluster is not configured). This indicates that `uvx` can execute the MCP server.
 
-If you encounter issues, ensure your Kubernetes `kubeconfig` is correctly set up and `uv` is in your PATH.
-
-After these steps, restart your Amazon Q CLI (if it was already running) for it to pick up the new MCP server configuration. You should then be able to invoke tools from `kubernetes-readonly-mcp` via Amazon Q.
+The process will start and wait silently for an MCP client (press Ctrl+C to stop). It will not print a namespace list — tools are invoked by an MCP host, not from the shell. Beyond that, verification depends on your MCP host: after configuration, the server and its tools should appear in the host's interface, where you can invoke them.
 
 ## Example Prompts
 
@@ -116,6 +168,7 @@ After these steps, restart your Amazon Q CLI (if it was already running) for it 
 2. "Are there any failing pods? Debug why they are failing"
 3. "Show me the logs from the nginx deployment"
 4. "List all services in the default namespace"
+5. "List all ingresses across every namespace" (uses the generic `list_resource` tool with `kind="Ingress"`, `api_version="networking.k8s.io/v1"`)
 
 ## License
 

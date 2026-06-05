@@ -1,251 +1,293 @@
-from mcp.server.fastmcp import FastMCP
-from kubernetes import client, config
-import json
-from typing import Optional, List, Any
+"""Read-only Kubernetes MCP server.
 
-# Create an MCP server for readonly kubectl commands against K8s cluster
+Exposes GET/LIST-only tools so AI assistants can inspect and troubleshoot
+clusters with no risk of mutation. Every tool is annotated read-only and
+returns native Python objects (FastMCP emits structured content + schemas).
+"""
+
+from typing import Optional
+
+from fastmcp import FastMCP
+from kubernetes import client, config, dynamic
+from kubernetes.dynamic.resource import ResourceList
+from mcp.types import ToolAnnotations
+
+# Create an MCP server for read-only operations against a Kubernetes cluster.
 mcp = FastMCP("kubernetes-readonly-mcp")
 
-# Kubernetes Manager Resource class
+
+def _ro(title: str) -> ToolAnnotations:
+    """Build the read-only annotation set shared by every tool."""
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+
+
 class KubernetesManager:
-    """Resource that manages Kubernetes API client connections"""
-    
+    """Manages Kubernetes API client connections (read-only use)."""
+
     def __init__(self):
-        """Initialize the Kubernetes client once"""
+        """Initialize the Kubernetes clients once."""
         try:
-            # Try to load from kubeconfig
+            # Try to load from kubeconfig.
             config.load_kube_config()
         except Exception:
-            # Fall back to in-cluster config if running in a pod
-            try:
-                config.load_incluster_config()
-            except Exception as e:
-                print(f"Failed to load Kubernetes configuration: {e}")
-                raise
-        
-        # Initialize API clients
+            # Fall back to in-cluster config if running in a pod.
+            config.load_incluster_config()
+
+        # Initialize the typed API clients used by the curated tools.
         self.core_api = client.CoreV1Api()
         self.apps_api = client.AppsV1Api()
         self.batch_api = client.BatchV1Api()
         self.networking_api = client.NetworkingV1Api()
-        
+        # Dynamic client powers the generic read-any-kind tools (incl. CRDs).
+        self.dynamic_api = dynamic.DynamicClient(client.ApiClient())
+
     def get_core_api(self):
-        """Get the CoreV1Api client"""
+        """Get the CoreV1Api client."""
         return self.core_api
-    
+
     def get_apps_api(self):
-        """Get the AppsV1Api client"""
+        """Get the AppsV1Api client."""
         return self.apps_api
-    
+
     def get_batch_api(self):
-        """Get the BatchV1Api client"""
+        """Get the BatchV1Api client."""
         return self.batch_api
-    
+
     def get_networking_api(self):
-        """Get the NetworkingV1Api client"""
+        """Get the NetworkingV1Api client."""
         return self.networking_api
 
-# Initialize the Kubernetes manager as a resource
-@mcp.resource('resource://k8s')
-def k8s_manager():
-    """Resource that provides access to Kubernetes APIs"""
-    print("Initializing Kubernetes API client...")
-    try:
-        return KubernetesManager()
-    except Exception as e:
-        print(f"Error initializing Kubernetes manager: {e}")
-        # Return a placeholder that will be replaced in the tool functions
-        return "k8s_manager_initialization_failed"
+    def get_dynamic_api(self):
+        """Get the dynamic client."""
+        return self.dynamic_api
 
-@mcp.tool(description="List all pods in a namespace or across all namespaces")
-def list_pods(namespace: Optional[str] = None, resource: Any = None):
+
+# Lazy module-level singleton: the synchronous kubernetes client is created
+# once on first tool use, not at import time.
+_manager = None
+
+
+def _get_manager() -> "KubernetesManager":
+    """Return the shared KubernetesManager, creating it on first use."""
+    global _manager
+    if _manager is None:
+        _manager = KubernetesManager()
+    return _manager
+
+
+def _sanitize(obj_dict, kind):
+    """Strip noisy/sensitive fields from a resource dict.
+
+    - Always drops ``metadata.managedFields`` (large, low value).
+    - For ``Secret`` kinds, removes ``data`` and ``stringData`` so secret
+      values are never returned; only metadata and ``type`` remain. Also drops
+      the ``kubectl.kubernetes.io/last-applied-configuration`` annotation, which
+      embeds the full original manifest (including the redacted values) when the
+      Secret was created with client-side ``kubectl apply``.
+
+    This is the single chokepoint enforcing Secret redaction, so it cannot be
+    bypassed (e.g. via a generic ``get_resource(kind="Secret")`` call).
+    """
+    if not isinstance(obj_dict, dict):
+        return obj_dict
+    metadata = obj_dict.get("metadata")
+    if isinstance(metadata, dict):
+        metadata.pop("managedFields", None)
+    if kind == "Secret":
+        obj_dict.pop("data", None)
+        obj_dict.pop("stringData", None)
+        # kubectl client-side apply stores the full original manifest (incl.
+        # data/stringData) here, so drop it to avoid leaking Secret values.
+        if isinstance(metadata, dict):
+            annotations = metadata.get("annotations")
+            if isinstance(annotations, dict):
+                annotations.pop("kubectl.kubernetes.io/last-applied-configuration", None)
+    return obj_dict
+
+
+@mcp.tool(
+    description="List all pods in a namespace or across all namespaces",
+    annotations=_ro("List Pods"),
+)
+def list_pods(namespace: Optional[str] = None):
     """
     List all pods in a specified namespace or across all namespaces if none is specified.
-    
+
     Args:
         namespace (str, optional): The Kubernetes namespace to list pods from.
                                   If not provided, pods from all namespaces will be listed.
-    
+
     Returns:
-        JSON string containing pod information including name, namespace, pod_ip, 
-        status, and labels.
+        A list of pod dicts including name, namespace, ip, status, labels, node, and containers.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        # Check if resource is a string and initialize KubernetesManager if needed
-        if isinstance(resource, str):
-            print(f"Resource is a string: {resource}, initializing KubernetesManager")
-            resource = KubernetesManager()
-        elif not hasattr(resource, 'get_core_api'):
-            print(f"Resource is not a KubernetesManager instance: {type(resource)}, initializing KubernetesManager")
-            resource = KubernetesManager()
-            
-        # Get pods based on namespace parameter
+        core = _get_manager().get_core_api()
         if namespace:
-            print(f"Listing pods in namespace: {namespace}")
-            ret = resource.get_core_api().list_namespaced_pod(namespace=namespace, watch=False)
+            ret = core.list_namespaced_pod(namespace=namespace, watch=False)
         else:
-            print("Listing pods across all namespaces")
-            ret = resource.get_core_api().list_pod_for_all_namespaces(watch=False)
-        
-        # Convert the response to a JSON format
+            ret = core.list_pod_for_all_namespaces(watch=False)
+
         pods = []
         for i in ret.items:
-            pods.append({
-                "name": i.metadata.name,
-                "namespace": i.metadata.namespace,
-                "ip": i.status.pod_ip,
-                "status": i.status.phase,
-                "labels": i.metadata.labels,
-                "creation_timestamp": i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else None,
-                "node": i.spec.node_name,
-                "containers": [container.name for container in i.spec.containers]
-            })
-        return json.dumps(pods)
+            pods.append(
+                {
+                    "name": i.metadata.name,
+                    "namespace": i.metadata.namespace,
+                    "ip": i.status.pod_ip,
+                    "status": i.status.phase,
+                    "labels": i.metadata.labels,
+                    "creation_timestamp": (
+                        i.metadata.creation_timestamp.isoformat()
+                        if i.metadata.creation_timestamp
+                        else None
+                    ),
+                    "node": i.spec.node_name,
+                    "containers": [container.name for container in i.spec.containers],
+                }
+            )
+        return pods
     except Exception as e:
-        print(f"Error in list_pods: {e}")
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
 
-@mcp.tool(description="List all deployments in a specified namespace")
-def list_deployments(namespace: Optional[str] = None, resource: Any = None):
+
+@mcp.tool(
+    description="List all deployments in a specified namespace",
+    annotations=_ro("List Deployments"),
+)
+def list_deployments(namespace: Optional[str] = None):
     """
     List all deployments in a specified namespace or across all namespaces if none is specified.
-    
+
     Args:
         namespace (str, optional): The Kubernetes namespace to list deployments from.
                                   If not provided, deployments from all namespaces will be listed.
-    
+
     Returns:
-        JSON string containing deployment information including name, namespace, replicas, 
-        available replicas, and labels.
+        A list of deployment dicts including name, namespace, replicas, available_replicas,
+        labels, and selector.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        # Get deployments based on namespace parameter
+        apps = _get_manager().get_apps_api()
         if namespace:
-            print(f"Listing deployments in namespace: {namespace}")
-            ret = resource.get_apps_api().list_namespaced_deployment(namespace=namespace, watch=False)
+            ret = apps.list_namespaced_deployment(namespace=namespace, watch=False)
         else:
-            print("Listing deployments across all namespaces")
-            ret = resource.get_apps_api().list_deployment_for_all_namespaces(watch=False)
-        
-        # Convert the response to a JSON format
+            ret = apps.list_deployment_for_all_namespaces(watch=False)
+
         deployments = []
         for item in ret.items:
-            deployments.append({
-                "name": item.metadata.name,
-                "namespace": item.metadata.namespace,
-                "replicas": item.spec.replicas,
-                "available_replicas": item.status.available_replicas,
-                "labels": item.metadata.labels,
-                "creation_timestamp": item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else None,
-                "selector": item.spec.selector.match_labels if item.spec.selector else None
-            })
-        
-        return json.dumps(deployments)
+            deployments.append(
+                {
+                    "name": item.metadata.name,
+                    "namespace": item.metadata.namespace,
+                    "replicas": item.spec.replicas,
+                    "available_replicas": item.status.available_replicas,
+                    "labels": item.metadata.labels,
+                    "creation_timestamp": (
+                        item.metadata.creation_timestamp.isoformat()
+                        if item.metadata.creation_timestamp
+                        else None
+                    ),
+                    "selector": (item.spec.selector.match_labels if item.spec.selector else None),
+                }
+            )
+        return deployments
     except Exception as e:
-        print(f"Error in list_deployments: {e}")
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
 
-@mcp.tool(description="Get logs from a pod in a specified namespace")
-def get_pod_logs(namespace: str, pod_name: str, container: Optional[str] = None, 
-                 tail_lines: Optional[int] = None, previous: bool = False, resource: Any = None):
+
+@mcp.tool(
+    description="Get logs from a pod in a specified namespace",
+    annotations=_ro("Get Pod Logs"),
+)
+def get_pod_logs(
+    namespace: str,
+    pod_name: str,
+    container: Optional[str] = None,
+    tail_lines: Optional[int] = None,
+    previous: bool = False,
+):
     """
     Get logs from a pod in a specified namespace.
-    
+
     Args:
         namespace (str): The Kubernetes namespace where the pod is located.
         pod_name (str): The name of the pod to get logs from.
-        container (str, optional): The container name within the pod. If not specified and 
-                                  the pod has multiple containers, logs from the first container will be returned.
-        tail_lines (int, optional): Number of lines to show from the end of the logs. If not specified, 
-                                   all logs will be returned.
-        previous (bool, optional): If true, return logs from a previous instantiation of the container.
-                                  Default is False.
-    
+        container (str, optional): The container name within the pod. If not specified and
+                                  the pod has multiple containers, logs from the first
+                                  container will be returned.
+        tail_lines (int, optional): Number of lines to show from the end of the logs.
+                                   If not specified, all logs will be returned.
+        previous (bool, optional): If true, return logs from a previous instantiation of the
+                                  container. Default is False.
+
     Returns:
-        JSON string containing the pod logs and metadata.
+        A dict containing the pod logs and metadata.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        # Get pod information to check if it exists and get container names
-        pod_info = resource.get_core_api().read_namespaced_pod(name=pod_name, namespace=namespace)
+        core = _get_manager().get_core_api()
+
+        # Get pod information to check if it exists and get container names.
+        pod_info = core.read_namespaced_pod(name=pod_name, namespace=namespace)
         container_names = [container.name for container in pod_info.spec.containers]
-        
-        # If container is not specified and there are multiple containers, use the first one
-        if not container and len(container_names) > 1:
+
+        # If container is not specified, default to the first container.
+        if not container and container_names:
             container = container_names[0]
-            print(f"Multiple containers found in pod. Using the first container: {container}")
-        elif not container and len(container_names) == 1:
-            container = container_names[0]
-        
-        # Get logs from the specified pod and container
-        logs = resource.get_core_api().read_namespaced_pod_log(
+
+        logs = core.read_namespaced_pod_log(
             name=pod_name,
             namespace=namespace,
             container=container,
             tail_lines=tail_lines,
-            previous=previous
+            previous=previous,
         )
-        
-        # Prepare the response
-        response = {
+
+        return {
             "pod_name": pod_name,
             "namespace": namespace,
             "container": container,
-            "logs": logs.split('\n'),
+            "logs": logs.split("\n"),
             "container_names": container_names,
-            "status": pod_info.status.phase
+            "status": pod_info.status.phase,
         }
-        
-        return json.dumps(response)
-    
-    except client.exceptions.ApiException as e:
-        print(f"API Exception in get_pod_logs: {e}")
-        if e.status == 404:
-            return json.dumps({"error": f"Pod {pod_name} not found in namespace {namespace}"})
-        else:
-            return json.dumps({"error": f"Error retrieving logs: {str(e)}"})
-    except Exception as e:
-        print(f"Error in get_pod_logs: {e}")
-        return json.dumps({"error": f"Unexpected error: {str(e)}"})
 
-@mcp.tool(description="List all services in a namespace or across all namespaces")
-def list_services(namespace: Optional[str] = None, resource: Any = None):
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return {"error": f"Pod {pod_name} not found in namespace {namespace}"}
+        return {"error": f"Error retrieving logs: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Unexpected error: {str(e)}"}
+
+
+@mcp.tool(
+    description="List all services in a namespace or across all namespaces",
+    annotations=_ro("List Services"),
+)
+def list_services(namespace: Optional[str] = None):
     """
     List all services in a specified namespace or across all namespaces if none is specified.
-    
+
     Args:
         namespace (str, optional): The Kubernetes namespace to list services from.
                                   If not provided, services from all namespaces will be listed.
-    
+
     Returns:
-        JSON string containing service information including name, namespace, type, cluster IP,
-        external IP, ports, and selectors.
+        A list of service dicts including name, namespace, type, cluster_ip, external_ips,
+        ports, and selector.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        # Get services based on namespace parameter
+        core = _get_manager().get_core_api()
         if namespace:
-            print(f"Listing services in namespace: {namespace}")
-            ret = resource.get_core_api().list_namespaced_service(namespace=namespace, watch=False)
+            ret = core.list_namespaced_service(namespace=namespace, watch=False)
         else:
-            print("Listing services across all namespaces")
-            ret = resource.get_core_api().list_service_for_all_namespaces(watch=False)
-        
-        # Convert the response to a JSON format
+            ret = core.list_service_for_all_namespaces(watch=False)
+
         services = []
         for item in ret.items:
             ports = []
@@ -255,375 +297,508 @@ def list_services(namespace: Optional[str] = None, resource: Any = None):
                         "name": port.name,
                         "port": port.port,
                         "target_port": port.target_port,
-                        "protocol": port.protocol
+                        "protocol": port.protocol,
                     }
                     if port.node_port:
                         port_info["node_port"] = port.node_port
                     ports.append(port_info)
-            
-            external_ips = item.spec.external_i_ps if hasattr(item.spec, 'external_i_ps') else None
-            
-            services.append({
-                "name": item.metadata.name,
-                "namespace": item.metadata.namespace,
-                "type": item.spec.type,
-                "cluster_ip": item.spec.cluster_ip,
-                "external_ips": external_ips,
-                "ports": ports,
-                "selector": item.spec.selector,
-                "creation_timestamp": item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else None
-            })
-        
-        return json.dumps(services)
-    except Exception as e:
-        print(f"Error in list_services: {e}")
-        return json.dumps({"error": str(e)})
 
-@mcp.tool(description="List all namespaces in the cluster")
-def list_namespaces(resource: Any = None):
+            external_ips = item.spec.external_i_ps if hasattr(item.spec, "external_i_ps") else None
+
+            services.append(
+                {
+                    "name": item.metadata.name,
+                    "namespace": item.metadata.namespace,
+                    "type": item.spec.type,
+                    "cluster_ip": item.spec.cluster_ip,
+                    "external_ips": external_ips,
+                    "ports": ports,
+                    "selector": item.spec.selector,
+                    "creation_timestamp": (
+                        item.metadata.creation_timestamp.isoformat()
+                        if item.metadata.creation_timestamp
+                        else None
+                    ),
+                }
+            )
+        return services
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description="List all namespaces in the cluster",
+    annotations=_ro("List Namespaces"),
+)
+def list_namespaces():
     """
     List all namespaces in the Kubernetes cluster.
-    
+
     Returns:
-        JSON string containing namespace information including name, status, and creation timestamp.
+        A list of namespace dicts including name, status, and creation_timestamp.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        print("Listing all namespaces")
-        ret = resource.get_core_api().list_namespace(watch=False)
-        
+        ret = _get_manager().get_core_api().list_namespace(watch=False)
+
         namespaces = []
         for item in ret.items:
-            namespaces.append({
-                "name": item.metadata.name,
-                "status": item.status.phase,
-                "creation_timestamp": item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else None
-            })
-        
-        return json.dumps(namespaces)
+            namespaces.append(
+                {
+                    "name": item.metadata.name,
+                    "status": item.status.phase,
+                    "creation_timestamp": (
+                        item.metadata.creation_timestamp.isoformat()
+                        if item.metadata.creation_timestamp
+                        else None
+                    ),
+                }
+            )
+        return namespaces
     except Exception as e:
-        print(f"Error in list_namespaces: {e}")
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
 
-@mcp.tool(description="Get Kubernetes events from the cluster for a specific namespace or all namespaces")
-def get_events(namespace: Optional[str] = None, field_selector: Optional[str] = None, 
-               resource: Any = None):
+
+@mcp.tool(
+    description="Get Kubernetes events from the cluster for a specific namespace or all namespaces",
+    annotations=_ro("Get Events"),
+)
+def get_events(namespace: Optional[str] = None, field_selector: Optional[str] = None):
     """
     Get Kubernetes events from the cluster for a specific namespace or all namespaces.
-    
+
     Args:
         namespace (str, optional): The Kubernetes namespace to get events from.
                                   If not provided, events from all namespaces will be returned.
         field_selector (str, optional): Selector to restrict the list of returned events by field.
                                        For example 'involvedObject.name=my-pod'.
-    
+
     Returns:
-        JSON string containing event information including type, reason, message, and involved object.
+        A dict containing the requested namespace, field_selector, and a list of events.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
+        core = _get_manager().get_core_api()
         if namespace:
-            print(f"Getting events from namespace: {namespace}")
-            events = resource.get_core_api().list_namespaced_event(namespace=namespace, field_selector=field_selector)
+            events = core.list_namespaced_event(namespace=namespace, field_selector=field_selector)
         else:
-            print("Getting events from all namespaces")
-            events = resource.get_core_api().list_event_for_all_namespaces(field_selector=field_selector)
-        
+            events = core.list_event_for_all_namespaces(field_selector=field_selector)
+
         event_list = []
         for event in events.items:
-            event_list.append({
-                "type": event.type,
-                "reason": event.reason,
-                "message": event.message,
-                "count": event.count,
-                "first_timestamp": event.first_timestamp.isoformat() if event.first_timestamp else None,
-                "last_timestamp": event.last_timestamp.isoformat() if event.last_timestamp else None,
-                "involved_object": {
-                    "kind": event.involved_object.kind,
-                    "name": event.involved_object.name,
-                    "namespace": event.involved_object.namespace,
-                },
-                "source": {
-                    "component": event.source.component if event.source else None,
-                    "host": event.source.host if event.source else None
+            event_list.append(
+                {
+                    "type": event.type,
+                    "reason": event.reason,
+                    "message": event.message,
+                    "count": event.count,
+                    "first_timestamp": (
+                        event.first_timestamp.isoformat() if event.first_timestamp else None
+                    ),
+                    "last_timestamp": (
+                        event.last_timestamp.isoformat() if event.last_timestamp else None
+                    ),
+                    "involved_object": {
+                        "kind": event.involved_object.kind,
+                        "name": event.involved_object.name,
+                        "namespace": event.involved_object.namespace,
+                    },
+                    "source": {
+                        "component": event.source.component if event.source else None,
+                        "host": event.source.host if event.source else None,
+                    },
                 }
-            })
-        
-        return json.dumps({
+            )
+
+        return {
             "namespace": namespace,
             "field_selector": field_selector,
-            "events": event_list
-        })
+            "events": event_list,
+        }
     except Exception as e:
-        print(f"Error in get_events: {e}")
-        return json.dumps({"error": f"Error retrieving events: {str(e)}"})
+        return {"error": f"Error retrieving events: {str(e)}"}
 
-@mcp.tool(description="Get logs from pods, deployments, jobs, or resources matching a label selector")
-def get_logs(resource_type: str, namespace: Optional[str] = None, name: Optional[str] = None, 
-             label_selector: Optional[str] = None, container: Optional[str] = None, 
-             tail: Optional[int] = None, since_seconds: Optional[int] = None,
-             timestamps: bool = False, pretty: bool = False, resource: Any = None):
+
+@mcp.tool(
+    description="Get logs from pods, deployments, jobs, or resources matching a label selector",
+    annotations=_ro("Get Logs"),
+)
+def get_logs(
+    resource_type: str,
+    namespace: Optional[str] = None,
+    name: Optional[str] = None,
+    label_selector: Optional[str] = None,
+    container: Optional[str] = None,
+    tail: Optional[int] = None,
+    since_seconds: Optional[int] = None,
+    timestamps: bool = False,
+):
     """
     Get logs from pods, deployments, jobs, or resources matching a label selector.
-    
+
     Args:
         resource_type (str): Type of resource to get logs from ('pod', 'deployment', 'job', etc.)
-        namespace (str, optional): The Kubernetes namespace. If not provided and name is specified, 
-                                  uses the 'default' namespace. If neither name nor namespace is 
-                                  provided, searches across all namespaces.
+        namespace (str, optional): The Kubernetes namespace. If not provided and name is
+                                  specified, uses the 'default' namespace. If neither name nor
+                                  namespace is provided, searches across all namespaces.
         name (str, optional): The name of the specific resource to get logs from.
         label_selector (str, optional): Label selector to filter resources (e.g. 'app=nginx').
                                        Required if name is not provided.
-        container (str, optional): The container name within the pod. If not specified and 
-                                  the pod has multiple containers, logs from the first container will be returned.
+        container (str, optional): The container name within the pod. If not specified and
+                                  the pod has multiple containers, logs from the first
+                                  container will be returned.
         tail (int, optional): Number of lines to show from the end of the logs.
         since_seconds (int, optional): Return logs newer than a relative duration in seconds.
-        timestamps (bool, optional): Include timestamps at the beginning of each line. Default is False.
-        pretty (bool, optional): Format the output in a more readable way. Default is False.
-    
+        timestamps (bool, optional): Include timestamps at the beginning of each line.
+                                  Default is False.
+
     Returns:
-        JSON string containing the logs and metadata.
+        A dict containing the logs and metadata.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-            
-        # Validate input parameters
+        manager = _get_manager()
+        core = manager.get_core_api()
+
+        # Validate input parameters.
         if not name and not label_selector:
-            return json.dumps({"error": "Either name or label_selector must be provided"})
-        
-        # Set default namespace if name is provided but namespace is not
+            return {"error": "Either name or label_selector must be provided"}
+
+        # Set default namespace if name is provided but namespace is not.
         if name and not namespace:
             namespace = "default"
-        
-        # Get pods based on the resource type and filters
+
+        # Resolve the set of pods to read logs from.
         pods_to_get_logs_from = []
-        
-        if resource_type.lower() == 'pod' and name:
-            # Direct pod access by name
+
+        if resource_type.lower() == "pod" and name:
+            # Direct pod access by name.
             try:
-                pod = resource.get_core_api().read_namespaced_pod(name=name, namespace=namespace)
+                pod = core.read_namespaced_pod(name=name, namespace=namespace)
                 pods_to_get_logs_from.append(pod)
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    return json.dumps({"error": f"Pod {name} not found in namespace {namespace}"})
+                    return {"error": f"Pod {name} not found in namespace {namespace}"}
                 raise
-        
-        elif resource_type.lower() == 'deployment' and name:
-            # Get pods from a deployment
+
+        elif resource_type.lower() == "deployment" and name:
+            # Get pods from a deployment.
             try:
-                deployment = resource.get_apps_api().read_namespaced_deployment(name=name, namespace=namespace)
+                deployment = manager.get_apps_api().read_namespaced_deployment(
+                    name=name, namespace=namespace
+                )
                 selector = deployment.spec.selector.match_labels
-                label_selector = ','.join([f"{k}={v}" for k, v in selector.items()])
-                
-                pods = resource.get_core_api().list_namespaced_pod(
-                    namespace=namespace, 
-                    label_selector=label_selector
-                )
+                label_selector = ",".join([f"{k}={v}" for k, v in selector.items()])
+
+                pods = core.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
                 pods_to_get_logs_from.extend(pods.items)
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    return json.dumps({"error": f"Deployment {name} not found in namespace {namespace}"})
+                    return {"error": f"Deployment {name} not found in namespace {namespace}"}
                 raise
-        
-        elif resource_type.lower() == 'job' and name:
-            # Get pods from a job
+
+        elif resource_type.lower() == "job" and name:
+            # Get pods from a job.
             try:
-                job = resource.get_batch_api().read_namespaced_job(name=name, namespace=namespace)
+                job = manager.get_batch_api().read_namespaced_job(name=name, namespace=namespace)
                 selector = job.spec.selector.match_labels
-                label_selector = ','.join([f"{k}={v}" for k, v in selector.items()])
-                
-                pods = resource.get_core_api().list_namespaced_pod(
-                    namespace=namespace, 
-                    label_selector=label_selector
-                )
+                label_selector = ",".join([f"{k}={v}" for k, v in selector.items()])
+
+                pods = core.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
                 pods_to_get_logs_from.extend(pods.items)
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    return json.dumps({"error": f"Job {name} not found in namespace {namespace}"})
+                    return {"error": f"Job {name} not found in namespace {namespace}"}
                 raise
-        
+
         elif label_selector:
-            # Get pods by label selector
+            # Get pods by label selector.
             if namespace:
-                pods = resource.get_core_api().list_namespaced_pod(
-                    namespace=namespace, 
-                    label_selector=label_selector
-                )
+                pods = core.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
             else:
-                pods = resource.get_core_api().list_pod_for_all_namespaces(
-                    label_selector=label_selector
-                )
+                pods = core.list_pod_for_all_namespaces(label_selector=label_selector)
             pods_to_get_logs_from.extend(pods.items)
-        
+
         else:
-            return json.dumps({"error": f"Unsupported resource type: {resource_type} or missing required parameters"})
-        
-        # If no pods found
+            return {
+                "error": (
+                    f"Unsupported resource type: {resource_type} or missing required parameters"
+                )
+            }
+
+        # If no pods found.
         if not pods_to_get_logs_from:
-            return json.dumps({"error": "No pods found matching the specified criteria"})
-        
-        # Get logs from all matching pods
+            return {"error": "No pods found matching the specified criteria"}
+
+        # Get logs from all matching pods.
         results = []
         for pod in pods_to_get_logs_from:
             pod_name = pod.metadata.name
             pod_namespace = pod.metadata.namespace
             container_names = [c.name for c in pod.spec.containers]
-            
-            # If container is not specified and there are multiple containers, use the first one
+
+            # If container is not specified, default to the first container.
             container_to_use = container
-            if not container_to_use and len(container_names) > 1:
+            if not container_to_use and container_names:
                 container_to_use = container_names[0]
-            elif not container_to_use and len(container_names) == 1:
-                container_to_use = container_names[0]
-            
+
             try:
-                # Get logs from the pod
-                logs = resource.get_core_api().read_namespaced_pod_log(
+                logs = core.read_namespaced_pod_log(
                     name=pod_name,
                     namespace=pod_namespace,
                     container=container_to_use,
                     tail_lines=tail,
                     timestamps=timestamps,
-                    since_seconds=since_seconds
+                    since_seconds=since_seconds,
                 )
-                
-                # Format logs based on pretty parameter
-                log_lines = logs.split('\n')
-                
-                # Add pod result to results list
-                results.append({
-                    "pod_name": pod_name,
-                    "namespace": pod_namespace,
-                    "container": container_to_use,
-                    "logs": log_lines,
-                    "container_names": container_names,
-                    "status": pod.status.phase
-                })
+
+                results.append(
+                    {
+                        "pod_name": pod_name,
+                        "namespace": pod_namespace,
+                        "container": container_to_use,
+                        "logs": logs.split("\n"),
+                        "container_names": container_names,
+                        "status": pod.status.phase,
+                    }
+                )
             except Exception as e:
-                print(f"Error getting logs for pod {pod_name}: {e}")
-                results.append({
-                    "pod_name": pod_name,
-                    "namespace": pod_namespace,
-                    "error": str(e)
-                })
-        
-        return json.dumps({
+                results.append(
+                    {
+                        "pod_name": pod_name,
+                        "namespace": pod_namespace,
+                        "error": str(e),
+                    }
+                )
+
+        return {
             "resource_type": resource_type,
             "name": name,
             "namespace": namespace,
             "label_selector": label_selector,
-            "results": results
-        }, indent=2 if pretty else None)
-    
-    except Exception as e:
-        print(f"Error in get_logs: {e}")
-        return json.dumps({"error": f"Error retrieving logs: {str(e)}"})
+            "results": results,
+        }
 
-@mcp.tool(description="List all nodes in the cluster")
-def list_nodes(resource: Any = None):
+    except Exception as e:
+        return {"error": f"Error retrieving logs: {str(e)}"}
+
+
+@mcp.tool(
+    description="List all nodes in the cluster",
+    annotations=_ro("List Nodes"),
+)
+def list_nodes():
     """
     Lists all nodes in the Kubernetes cluster, providing detailed information for each.
 
-    This function connects to the Kubernetes API to retrieve a list of all nodes
-    and extracts various details about each node. The information includes:
-    - Node name
-    - Current status (e.g., Ready, NotReady)
-    - Assigned roles (e.g., master, worker)
-    - IP addresses (internal, external)
-    - Resource capacity (CPU, memory, pods)
-    - Allocatable resources
-    - Node information (Kubelet version, OS image, container runtime)
-    - Creation timestamp
-    - Labels
-    - Taints
-
-    Args:
-        resource (Any, optional): The KubernetesManager resource instance.
-                                  If not provided, it will be initialized automatically.
-                                  This argument is typically injected by the MCP framework.
+    The information includes node name, current status (e.g., Ready, NotReady), assigned roles,
+    IP addresses, resource capacity and allocatable resources, node info (kubelet version,
+    OS image, container runtime), creation timestamp, labels, and taints.
 
     Returns:
-        str: A JSON string representing a list of nodes and their comprehensive details.
-             Returns a JSON string with an "error" key if an exception occurs.
+        A list of node dicts with the details above, or a dict with an "error" key on failure.
     """
     try:
-        # Get the resource from the k8s_manager if not provided
-        if resource is None:
-            resource = k8s_manager()
-
-        # Check if resource is a string and initialize KubernetesManager if needed
-        if isinstance(resource, str):
-            print(f"Resource is a string: {resource}, initializing KubernetesManager")
-            resource = KubernetesManager()
-        elif not hasattr(resource, 'get_core_api'):
-            print(f"Resource is not a KubernetesManager instance: {type(resource)}, initializing KubernetesManager")
-            resource = KubernetesManager()
-
-        print("Listing all nodes in the cluster")
-        ret = resource.get_core_api().list_node(watch=False)
+        ret = _get_manager().get_core_api().list_node(watch=False)
 
         nodes = []
         for item in ret.items:
-            # Extract node status
+            # Extract node status.
             status = None
             for condition in item.status.conditions:
                 if condition.type == "Ready":
                     status = "Ready" if condition.status == "True" else "NotReady"
                     break
 
-            # Extract node roles
+            # Extract node roles.
             roles = [role for role in item.metadata.labels if "node-role.kubernetes.io" in role]
             if not roles:
-                roles = ["<none>"] # Handle nodes with no specific role label
+                roles = ["<none>"]  # Handle nodes with no specific role label.
 
-            # Extract IP addresses
+            # Extract IP addresses.
             addresses = {address.type: address.address for address in item.status.addresses}
 
-            nodes.append({
-                "name": item.metadata.name,
-                "status": status,
-                "roles": roles,
-                "addresses": addresses,
-                "capacity": {
-                    "cpu": item.status.capacity.get("cpu"),
-                    "memory": item.status.capacity.get("memory"),
-                    "pods": item.status.capacity.get("pods")
-                },
-                "allocatable": {
-                    "cpu": item.status.allocatable.get("cpu"),
-                    "memory": item.status.allocatable.get("memory"),
-                    "pods": item.status.allocatable.get("pods")
-                },
-                "node_info": {
-                    "kubelet_version": item.status.node_info.kubelet_version,
-                    "os_image": item.status.node_info.os_image,
-                    "container_runtime_version": item.status.node_info.container_runtime_version
-                },
-                "creation_timestamp": item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else None,
-                "labels": item.metadata.labels,
-                "taints": [{
-                    "key": taint.key,
-                    "value": taint.value,
-                    "effect": taint.effect
-                } for taint in item.spec.taints] if item.spec.taints else []
-            })
+            node_info = item.status.node_info
+            nodes.append(
+                {
+                    "name": item.metadata.name,
+                    "status": status,
+                    "roles": roles,
+                    "addresses": addresses,
+                    "capacity": {
+                        "cpu": item.status.capacity.get("cpu"),
+                        "memory": item.status.capacity.get("memory"),
+                        "pods": item.status.capacity.get("pods"),
+                    },
+                    "allocatable": {
+                        "cpu": item.status.allocatable.get("cpu"),
+                        "memory": item.status.allocatable.get("memory"),
+                        "pods": item.status.allocatable.get("pods"),
+                    },
+                    "node_info": {
+                        "kubelet_version": node_info.kubelet_version,
+                        "os_image": node_info.os_image,
+                        "container_runtime_version": node_info.container_runtime_version,
+                    },
+                    "creation_timestamp": (
+                        item.metadata.creation_timestamp.isoformat()
+                        if item.metadata.creation_timestamp
+                        else None
+                    ),
+                    "labels": item.metadata.labels,
+                    "taints": (
+                        [
+                            {
+                                "key": taint.key,
+                                "value": taint.value,
+                                "effect": taint.effect,
+                            }
+                            for taint in item.spec.taints
+                        ]
+                        if item.spec.taints
+                        else []
+                    ),
+                }
+            )
 
-        return json.dumps(nodes, indent=2)
+        return nodes
     except Exception as e:
-        print(f"Error in list_nodes: {e}")
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description=(
+        "List resources of any kind (including CRDs) via the dynamic client. "
+        "GET/LIST only; never mutates."
+    ),
+    annotations=_ro("List Resource"),
+)
+def list_resource(
+    kind: str,
+    api_version: str = "v1",
+    namespace: Optional[str] = None,
+    label_selector: Optional[str] = None,
+    field_selector: Optional[str] = None,
+):
+    """
+    List resources of an arbitrary kind using the dynamic client.
+
+    Works for built-in kinds and Custom Resources alike. Secret values are
+    always redacted (see _sanitize), so this cannot be used to read Secret data.
+
+    Args:
+        kind (str): Resource kind, e.g. 'Pod', 'Ingress', 'MyCustomResource'.
+        api_version (str, optional): Group/version, e.g. 'v1' (default) or
+                                    'networking.k8s.io/v1', 'apps/v1'.
+        namespace (str, optional): Namespace to scope to. If omitted, lists
+                                   across all namespaces (or cluster-scoped).
+        label_selector (str, optional): Label selector, e.g. 'app=nginx'.
+        field_selector (str, optional): Field selector, e.g. 'metadata.name=foo'.
+
+    Returns:
+        A list of sanitized resource dicts, or a dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        api = dyn.resources.get(api_version=api_version, kind=kind)
+        res = api.get(
+            namespace=namespace,
+            label_selector=label_selector,
+            field_selector=field_selector,
+        )
+        return [_sanitize(item.to_dict(), kind) for item in res.items]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description=(
+        "Get a single resource of any kind (including CRDs) by name via the "
+        "dynamic client. GET only; never mutates."
+    ),
+    annotations=_ro("Get Resource"),
+)
+def get_resource(
+    kind: str,
+    name: str,
+    api_version: str = "v1",
+    namespace: Optional[str] = None,
+):
+    """
+    Get a single resource of an arbitrary kind by name using the dynamic client.
+
+    Works for built-in kinds and Custom Resources alike. If kind is 'Secret',
+    the data/stringData fields are redacted (see _sanitize).
+
+    Args:
+        kind (str): Resource kind, e.g. 'Pod', 'ConfigMap', 'MyCustomResource'.
+        name (str): The resource name.
+        api_version (str, optional): Group/version, e.g. 'v1' (default) or
+                                    'apps/v1'.
+        namespace (str, optional): Namespace for namespaced resources.
+
+    Returns:
+        A sanitized resource dict, or a dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        api = dyn.resources.get(api_version=api_version, kind=kind)
+        res = api.get(name=name, namespace=namespace)
+        return _sanitize(res.to_dict(), kind)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool(
+    description=(
+        "Discover which resource kinds (including CRDs) the cluster exposes "
+        "and can be listed. Read-only discovery."
+    ),
+    annotations=_ro("List API Resources"),
+)
+def list_api_resources():
+    """
+    Discover the listable resource kinds available on the cluster.
+
+    Uses dynamic discovery to enumerate every resource whose verbs include
+    'list', so callers know what they can pass to list_resource/get_resource
+    (including CRDs). Entries are deduplicated by (group_version, kind).
+
+    Returns:
+        A list of dicts with group_version, kind, namespaced, and verbs, or a
+        dict with an "error" key.
+    """
+    try:
+        dyn = _get_manager().get_dynamic_api()
+        resources = []
+        seen = set()
+        for resource in dyn.resources.search():
+            # Skip synthetic ResourceList entries (PodList, SecretList, ...).
+            # They inherit the base 'list' verb but ResourceList.get() expects a
+            # body, so list_resource(kind="PodList") would fail. Don't advertise.
+            if isinstance(resource, ResourceList):
+                continue
+            verbs = resource.verbs or []
+            if "list" not in verbs:
+                continue
+            key = (resource.group_version, resource.kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            resources.append(
+                {
+                    "group_version": resource.group_version,
+                    "kind": resource.kind,
+                    "namespaced": resource.namespaced,
+                    "verbs": list(verbs),
+                }
+            )
+        return resources
+    except Exception as e:
+        return {"error": str(e)}
+
 
 def main():
     """Entry point for the MCP server when run as a script."""
-    mcp.run()  # Default: uses STDIO transport
+    mcp.run()  # Default: uses STDIO transport.
+
 
 if __name__ == "__main__":
     main()

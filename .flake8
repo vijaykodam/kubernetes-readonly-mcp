@@ -1,0 +1,6 @@
+[flake8]
+# Align flake8 with black (flake8 does not read pyproject.toml natively).
+max-line-length = 100
+# E203 and W503 are intentionally violated by black; ignore them.
+extend-ignore = E203, W503
+exclude = .git,__pycache__,build,dist,.venv,*.egg-info
