@@ -5,4 +5,4 @@ A Model Context Protocol server for safely interacting with Kubernetes clusters
 with read-only operations.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
